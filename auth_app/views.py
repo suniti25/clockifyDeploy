@@ -1,10 +1,12 @@
 from django.shortcuts import render
+from django.utils.decorators import method_decorator
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import AllowAny
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError, InvalidToken
+from django.views.decorators.csrf import csrf_exempt
 from django.conf import settings
 from datetime import timedelta
 
@@ -30,18 +32,16 @@ class LoginView(APIView):
                 'role': role,
             }, status=status.HTTP_200_OK)
 
-            # Set HttpOnly refresh token cookie; samesite/secure depend on scheme
+            # Set HttpOnly refresh token cookie for cross-origin HTTPS
             max_age = int(settings.SIMPLE_JWT.get('REFRESH_TOKEN_LIFETIME', timedelta(days=1)).total_seconds())
-            cookie_secure = request.is_secure()
-            cookie_samesite = "None" if cookie_secure else "Lax"
 
             resp.set_cookie(
                 key="refresh_token",
                 value=str(refresh),
                 httponly=True,
-                secure=cookie_secure,
-                samesite=cookie_samesite,
-                path="/api/auth/",
+                secure=True,  
+                samesite="None",  
+                path="/",  
                 max_age=max_age,
             )
 
@@ -50,15 +50,26 @@ class LoginView(APIView):
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-
+@method_decorator(csrf_exempt, name='dispatch')
 class RefreshCookieView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
+        print("=" * 50)
+        print("REFRESH TOKEN DEBUG")
+        print("All cookies:", dict(request.COOKIES))
+        print("Cookie header:", request.META.get('HTTP_COOKIE', 'No cookie header'))
+        print("Origin:", request.META.get('HTTP_ORIGIN', 'No origin'))
+        print("=" * 50)
+        
         token = request.COOKIES.get('refresh_token')
         
         if not token:
-            return Response({'detail': 'Refresh token missing', 'cookies_received': list(request.COOKIES.keys())}, status=status.HTTP_401_UNAUTHORIZED)
+            return Response({
+                'detail': 'Refresh token missing', 
+                'cookies_received': list(request.COOKIES.keys()),
+                'cookie_header': request.META.get('HTTP_COOKIE', 'None'),
+            }, status=status.HTTP_401_UNAUTHORIZED)
 
         try:
             refresh = RefreshToken(token)
@@ -72,23 +83,22 @@ class RefreshCookieView(APIView):
                     except Exception:
                         pass
 
-                # Mint a new refresh token (update jti/exp/iat and outstand)
+                # Mint a new refresh token and set cookie
                 refresh.set_jti()
                 refresh.set_exp()
                 refresh.set_iat()
                 refresh.outstand()
 
                 resp = Response(data, status=status.HTTP_200_OK)
-                cookie_secure = request.is_secure()
-                cookie_samesite = "None" if cookie_secure else "Lax"
                 max_age = int(settings.SIMPLE_JWT.get('REFRESH_TOKEN_LIFETIME', timedelta(days=1)).total_seconds())
+
                 resp.set_cookie(
                     key='refresh_token',
                     value=str(refresh),
                     httponly=True,
-                    secure=cookie_secure,
-                    samesite=cookie_samesite,
-                    path='/api/auth/',
+                    secure=True, 
+                    samesite="None",  
+                    path='/', 
                     max_age=max_age,
                 )
                 return resp
@@ -103,7 +113,10 @@ class LogoutView(APIView):
 
     def post(self, request):
         resp = Response({'message': 'Logged out'}, status=status.HTTP_200_OK)
-        resp.delete_cookie('refresh_token', path='/api/auth/')
+        resp.delete_cookie('refresh_token',
+                            path='/', 
+                            samesite='None',
+                            secure=True)
         return resp
 
 
