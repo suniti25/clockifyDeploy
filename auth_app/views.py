@@ -3,14 +3,14 @@ from django.utils.decorators import method_decorator
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError, InvalidToken
 from django.views.decorators.csrf import csrf_exempt
 from django.conf import settings
 from datetime import timedelta
 
-from .serializers import LoginSerializer, RegisterSerializer
+from .serializers import LoginSerializer, RegisterSerializer, UpdateEmailSerializer
 
 
 class LoginView(APIView):
@@ -29,7 +29,8 @@ class LoginView(APIView):
             resp = Response({
                 'access': str(refresh.access_token),
                 'username': user.username,
-                'role': role,
+                # 'role': role,
+                # 'email': user.email,
             }, status=status.HTTP_200_OK)
 
             # Set HttpOnly refresh token cookie for cross-origin HTTPS
@@ -49,6 +50,24 @@ class LoginView(APIView):
             return resp
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class SetCookieView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        response = Response({"message": "Cookie set"})
+
+        response.set_cookie(
+            key="my_cookie",
+            value="secret_value",
+            httponly=True,
+            secure=False,
+            samesite="Lax",
+            max_age=60 * 60,
+        )
+
+        return response
 
 @method_decorator(csrf_exempt, name='dispatch')
 class RefreshCookieView(APIView):
@@ -140,4 +159,18 @@ class RegisterView(APIView):
                 }
             }, status=status.HTTP_201_CREATED)
         
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class UpdateEmailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = UpdateEmailSerializer(data=request.data, context={'user': request.user})
+        if serializer.is_valid():
+            serializer.save()
+            return Response({
+                'message': 'Email updated successfully',
+                'email': request.user.email
+            }, status=status.HTTP_200_OK)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)

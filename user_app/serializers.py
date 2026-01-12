@@ -19,8 +19,9 @@ class EmployeeSerializer(serializers.ModelSerializer):
 
 class ProfileSerializer(serializers.ModelSerializer):
     employee = EmployeeSerializer(allow_null=True)
+    email = serializers.EmailField(source='user.email', read_only=True)
 
     class Meta:
         model = Profile
-        fields = ['id', 'role', 'employee']
+        fields = ['id', 'role', 'email', 'employee']
 

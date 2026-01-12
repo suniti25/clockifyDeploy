@@ -6,6 +6,7 @@ from rest_framework import serializers
 class LoginSerializer(serializers.Serializer):
     username = serializers.CharField()
     password = serializers.CharField(write_only=True)
+    email = serializers.EmailField(required=False)
 
     def validate(self, data):
         user = authenticate(
@@ -15,6 +16,21 @@ class LoginSerializer(serializers.Serializer):
 
         if not user:
             raise serializers.ValidationError("Invalid username or password")
+
+        provided_email = data.get('email')
+        if not user.email:
+            if not provided_email:
+                raise serializers.ValidationError({
+                    'email': 'Email is required for login to send notifications.'
+                })
+
+            if User.objects.filter(email=provided_email).exclude(pk=user.pk).exists():
+                raise serializers.ValidationError({
+                    'email': 'This email is already in use.'
+                })
+
+            user.email = provided_email
+            user.save(update_fields=['email'])
 
         data['user'] = user
         return data
@@ -52,4 +68,22 @@ class RegisterSerializer(serializers.ModelSerializer):
             password=password
         )
         
+        return user
+
+
+class UpdateEmailSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+
+    def validate_email(self, value):
+        user = self.context.get('user')
+        # Ensure email uniqueness across users
+        if User.objects.filter(email=value).exclude(pk=user.pk).exists():
+            raise serializers.ValidationError('This email is already in use.')
+        return value
+
+    def save(self, **kwargs):
+        user = self.context.get('user')
+        email = self.validated_data['email']
+        user.email = email
+        user.save(update_fields=['email'])
         return user

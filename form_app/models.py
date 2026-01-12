@@ -40,6 +40,7 @@ class LeaveRequest(models.Model):
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='PENDING')
     is_paid = models.BooleanField(default=False)
     applied_at = models.DateTimeField(auto_now_add=True)
+    rejection_reason = models.TextField(blank=True, null=True)
 
     def total_days(self):
         days = (self.end_date - self.start_date).days + 1

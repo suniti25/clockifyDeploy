@@ -4,13 +4,11 @@ from datetime import date
 
 
 class Employee(models.Model):
-  
     user = models.OneToOneField(
         User,
         on_delete=models.CASCADE,
         related_name="employee"
     )
-    
     name = models.CharField(max_length=255, blank=True, null=True)
 
     joining_date = models.DateField()
@@ -24,7 +22,6 @@ class Employee(models.Model):
 
 
 class Profile(models.Model):
-   
     ROLE_CHOICES = [
         ('EMPLOYEE', 'Employee'),
         ('ADMIN', 'Admin'),
@@ -41,8 +38,6 @@ class Profile(models.Model):
         choices=ROLE_CHOICES,
         default='EMPLOYEE'
     )
-
-    
     employee = models.OneToOneField(
         Employee,
         on_delete=models.SET_NULL,
