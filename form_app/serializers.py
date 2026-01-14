@@ -27,8 +27,13 @@ class LeaveCreateSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         request = self.context['request']
+        
+        # Block admins from creating leave requests
+        if request.user.profile.role == 'ADMIN':
+            raise serializers.ValidationError("Admins cannot apply for leave")
+        
         employee = request.user.profile.employee
-
+        
         leave_days = LeaveRequest(
             start_date=validated_data['start_date'],
             end_date=validated_data['end_date'],

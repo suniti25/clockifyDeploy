@@ -1,11 +1,11 @@
 from django.urls import path
-from .views import LoginView, RegisterView, RefreshCookieView, LogoutView, SetCookieView, UpdateEmailView
+from django.contrib import admin
+from .views import LoginView, RegisterView, SetRefreshCookieView, UpdateEmailView, RefreshTokenView
 
 urlpatterns = [
     path('login/', LoginView.as_view(), name='login'),
     path('register/', RegisterView.as_view(), name='register'),
-    path('refresh/', RefreshCookieView.as_view(), name='token_refresh'),
-    path('logout/', LogoutView.as_view(), name='logout'),
-    path('set-cookie/', SetCookieView.as_view(), name='set_cookie'),
     path('email/', UpdateEmailView.as_view(), name='update_email'),
+    path('setcookie/', SetRefreshCookieView.as_view(), name='set_refresh_cookie'),
+    path('cookie/', RefreshTokenView.as_view(), name='refresh_token'),
 ]

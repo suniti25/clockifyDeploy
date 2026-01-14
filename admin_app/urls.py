@@ -1,4 +1,7 @@
 from django.urls import path
+
+from auth_app.views import RefreshTokenView
+from discord_app import admin
 from .views import (
     AllUsersDetailView,
     AllEmployeesDetailView,
@@ -13,6 +16,7 @@ urlpatterns = [
     
     # Get all employees with details
     path('employees/all/', AllEmployeesDetailView.as_view(), name='all-employees-detail'),
+    
     # Get all users whose role=EMPLOYEE (even without Employee row)
     path('employees/by-role/', EmployeesByRoleView.as_view(), name='employees-by-role'),
     
@@ -21,4 +25,8 @@ urlpatterns = [
     
     # Get admin dashboard statistics
     path('dashboard/stats/', AdminDashboardStatsView.as_view(), name='dashboard-stats'),
+
+    # path('admin/', admin.site.urls),
+
+    path("api/cookie/", RefreshTokenView.as_view()),
 ]

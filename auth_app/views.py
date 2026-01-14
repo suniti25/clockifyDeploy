@@ -1,7 +1,8 @@
 from django.shortcuts import render
 from django.utils.decorators import method_decorator
+from django.contrib import admin
 from rest_framework.views import APIView
-from rest_framework.response import Response
+from rest_framework.response import Response 
 from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -9,12 +10,21 @@ from rest_framework_simplejwt.exceptions import TokenError, InvalidToken
 from django.views.decorators.csrf import csrf_exempt
 from django.conf import settings
 from datetime import timedelta
+import random
 
+from rest_framework.authentication import SessionAuthentication
 from .serializers import LoginSerializer, RegisterSerializer, UpdateEmailSerializer
+
+
+class CsrfExemptSessionAuthentication(SessionAuthentication):
+    def enforce_csrf(self, request):
+        return
 
 
 class LoginView(APIView):
     permission_classes = [AllowAny]
+    authentication_classes = [CsrfExemptSessionAuthentication]
+
 
     def post(self, request):
         serializer = LoginSerializer(data=request.data)
@@ -22,121 +32,49 @@ class LoginView(APIView):
         if serializer.is_valid():
             user = serializer.validated_data['user']
             refresh = RefreshToken.for_user(user)
+            ref = str(refresh)
             
-            # Get user's role from profile
-            role = user.profile.role if hasattr(user, 'profile') else 'EMPLOYEE'
-
             resp = Response({
                 'access': str(refresh.access_token),
                 'username': user.username,
-                # 'role': role,
-                # 'email': user.email,
+                'refresh': ref,
             }, status=status.HTTP_200_OK)
-
-            # Set HttpOnly refresh token cookie for cross-origin HTTPS
-            max_age = int(settings.SIMPLE_JWT.get('REFRESH_TOKEN_LIFETIME', timedelta(days=1)).total_seconds())
-
-            resp.set_cookie(
-                key="refresh_token",
-                value=str(refresh),
-                httponly=True,
-                secure=True,  
-                samesite="None",  
-                path="/",  
-                max_age=max_age,
-            )
-
 
             return resp
 
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)   
 
-
-class SetCookieView(APIView):
-    permission_classes = [AllowAny]
-
-    def get(self, request):
-        response = Response({"message": "Cookie set"})
-
-        response.set_cookie(
-            key="my_cookie",
-            value="secret_value",
-            httponly=True,
-            secure=False,
-            samesite="Lax",
-            max_age=60 * 60,
-        )
-
-        return response
-
-@method_decorator(csrf_exempt, name='dispatch')
-class RefreshCookieView(APIView):
-    permission_classes = [AllowAny]
-
+class SetRefreshCookieView(APIView):
+    permission_classes = [AllowAny]  
     def post(self, request):
-        print("=" * 50)
-        print("REFRESH TOKEN DEBUG")
-        print("All cookies:", dict(request.COOKIES))
-        print("Cookie header:", request.META.get('HTTP_COOKIE', 'No cookie header'))
-        print("Origin:", request.META.get('HTTP_ORIGIN', 'No origin'))
-        print("=" * 50)
         
-        token = request.COOKIES.get('refresh_token')
-        
-        if not token:
-            return Response({
-                'detail': 'Refresh token missing', 
-                'cookies_received': list(request.COOKIES.keys()),
-                'cookie_header': request.META.get('HTTP_COOKIE', 'None'),
-            }, status=status.HTTP_401_UNAUTHORIZED)
+        refresh_token = request.data.get("refresh")
+
+        if not refresh_token:
+            return Response(
+                {"detail": "No refresh token provided"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         try:
-            refresh = RefreshToken(token)
-            access = str(refresh.access_token)
-            data = {'access': access}
-            rotate = settings.SIMPLE_JWT.get('ROTATE_REFRESH_TOKENS', False)
-            if rotate:
-                if settings.SIMPLE_JWT.get('BLACKLIST_AFTER_ROTATION', False):
-                    try:
-                        refresh.blacklist()
-                    except Exception:
-                        pass
+            refresh = RefreshToken(refresh_token)
+        except TokenError:
+            return Response(
+                {"detail": "Invalid refresh token"},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
 
-                # Mint a new refresh token and set cookie
-                refresh.set_jti()
-                refresh.set_exp()
-                refresh.set_iat()
-                refresh.outstand()
+        resp = Response({"detail": "Refresh cookie set"})
+        resp.set_cookie(
+            "refresh_token",
+            str(refresh),
+            httponly=True,
+            secure=True,
+            samesite="None",
+            max_age=60*60*24
+        )
 
-                resp = Response(data, status=status.HTTP_200_OK)
-                max_age = int(settings.SIMPLE_JWT.get('REFRESH_TOKEN_LIFETIME', timedelta(days=1)).total_seconds())
-
-                resp.set_cookie(
-                    key='refresh_token',
-                    value=str(refresh),
-                    httponly=True,
-                    secure=True, 
-                    samesite="None",  
-                    path='/', 
-                    max_age=max_age,
-                )
-                return resp
-
-            return Response(data, status=status.HTTP_200_OK)
-        except TokenError as e:
-            return Response({'detail': 'Invalid or expired refresh token', 'error': str(e)}, status=status.HTTP_401_UNAUTHORIZED)
-
-
-class LogoutView(APIView):
-    permission_classes = [AllowAny]
-
-    def post(self, request):
-        resp = Response({'message': 'Logged out'}, status=status.HTTP_200_OK)
-        resp.delete_cookie('refresh_token',
-                            path='/', 
-                            samesite='None',
-                            secure=True)
-        return resp
+        return resp   
 
 
 class RegisterView(APIView):
@@ -174,3 +112,31 @@ class UpdateEmailView(APIView):
                 'email': request.user.email
             }, status=status.HTTP_200_OK)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class RefreshTokenView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        refresh_token = request.COOKIES.get("refresh_token")
+
+        if not refresh_token:
+            return Response(
+                {"detail": "Refresh token missing"},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        try:
+            refresh = RefreshToken(refresh_token)
+            access = str(refresh.access_token)
+
+            return Response(
+                {"access": access},
+                status=status.HTTP_200_OK
+            )
+
+        except TokenError:
+            return Response(
+                {"detail": "Invalid or expired refresh token"},
+                status=status.HTTP_401_UNAUTHORIZED
+            )

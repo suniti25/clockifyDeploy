@@ -40,7 +40,7 @@ class AllUsersDetailSerializer(serializers.Serializer):
     is_active = serializers.BooleanField()
     date_joined = serializers.DateTimeField()
     profile = serializers.SerializerMethodField()
-    #employee = serializers.SerializerMethodField()
+    employee = serializers.SerializerMethodField()
 
     def get_profile(self, obj):
         try:

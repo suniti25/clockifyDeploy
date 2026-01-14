@@ -63,7 +63,7 @@ CORS_ALLOWED_ORIGINS = [
     "http://127.0.0.1:3000",
     "http://127.0.0.1:5173",
     "https://robust-broodier-mozell.ngrok-free.app",
-    "https://57a5095c9ea5.ngrok-free.app"
+    "https://unaroused-noe-covinously.ngrok-free.dev"
 ]
 
 CSRF_TRUSTED_ORIGINS = [
@@ -72,7 +72,7 @@ CSRF_TRUSTED_ORIGINS = [
     "http://127.0.0.1:3000",
     "http://127.0.0.1:5173",
     "https://robust-broodier-mozell.ngrok-free.app",
-    "https://57a5095c9ea5.ngrok-free.app"
+    "https://unaroused-noe-covinously.ngrok-free.dev"
 ]
 
 CORS_ALLOW_HEADERS = [
@@ -147,11 +147,11 @@ REST_FRAMEWORK = {
 }
 
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(days=1),
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=10),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=30),
     'AUTH_HEADER_TYPES': ('Bearer',),
-    'ROTATE_REFRESH_TOKENS': True,
-    'BLACKLIST_AFTER_ROTATION': True,
+    'ROTATE_REFRESH_TOKENS': False,
+    'BLACKLIST_AFTER_ROTATION': False,
 }
 
 # Internationalization
@@ -174,7 +174,6 @@ APPEND_SLASH = False
 STATIC_URL = 'static/'
 
 # Email configuration
-# Defaults to console backend for development; set env vars for SMTP in production.
 EMAIL_BACKEND = os.getenv('EMAIL_BACKEND', 'django.core.mail.backends.console.EmailBackend')
 DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'noreply@leavesystem.com')
 

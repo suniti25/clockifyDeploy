@@ -1,6 +1,7 @@
 from django.urls import path
-from .views import apply_leave
+from . import views
 
 urlpatterns = [
-    path('leaves/', apply_leave),
+    path('api/apply_leave/', views.apply_leave, name='apply_leave'), 
+    path('api/requests/', views.get_requests, name='get_requests'),
 ]

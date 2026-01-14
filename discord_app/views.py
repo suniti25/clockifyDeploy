@@ -6,6 +6,8 @@ import os
 from dotenv import load_dotenv
 from nacl.signing import VerifyKey
 from nacl.exceptions import BadSignatureError
+from datetime import datetime
+import pytz
 
 from form_app.models import LeaveRequest
 from discord_app.services import send_rejection_email_to_employee
@@ -117,28 +119,25 @@ def discord_interactions(request):
                 }
             }, status=200)
 
-        if action == 'approve':
-            response_message = f"✅ **Confirm Approval**\n\nAre you sure you want to approve this leave request?\n\n**Employee:** {leave_request.employee.name}\n**Leave Type:** {leave_request.get_leave_type_display()}\n**Start Date:** {leave_request.start_date.strftime('%d %B %Y')}\n**End Date:** {leave_request.end_date.strftime('%d %B %Y')}"
-            
+        if action == 'approve':   
             return JsonResponse({
-                "type": 7,  # UPDATE_MESSAGE
+                "type": 9,
                 "data": {
-                    "content": response_message,
+                    "custom_id": f"leave_approve_modal_{leave_request.id}",
+                    "title": "Confirm Leave Approval",
                     "components": [
                         {
                             "type": 1,
                             "components": [
-                                {
-                                    "type": 2,
-                                    "style": 3,
-                                    "label": "Yes, Approve",
-                                    "custom_id": f"leave_confirm_approve_{leave_request.id}"
-                                },
-                                {
-                                    "type": 2,
-                                    "style": 4,
-                                    "label": "Cancel",
-                                    "custom_id": f"leave_cancel_{leave_request.id}"
+                                { 
+                                    "type": 4,
+                                    "custom_id": "confirm_approval",
+                                    "label": "Press Submit to confirm approval",
+                                    "style": 1,
+                                    "min_length": 0,
+                                    "max_length": 1,
+                                    "placeholder": "No input needed",
+                                    "required": False
                                 }
                             ]
                         }
@@ -172,40 +171,61 @@ def discord_interactions(request):
                 }
             }, status=200)
 
-        elif action == 'confirm':
-            if len(parts) == 4:
-                final_action = parts[2]
-                
-                if final_action == 'approve':
-                    leave_request.status = 'APPROVED'
-                    leave_request.save(update_fields=['status'])
-                    response_message = f"✅ **APPROVED**: {leave_request.employee.name} - {leave_request.get_leave_type_display()}\n\n📢 Posted to leaves_and_notices channel"
-                    
-                    return JsonResponse({
-                        "type": 7,
-                        "data": {
-                            "content": response_message,
-                            "components": []
-                        }
-                    }, status=200)
-                else:
-                    return JsonResponse({
-                        "type": 4,
-                        "data": {"content": "❌ Invalid confirmation action", "flags": 64}
-                    }, status=200)
-            else:
-                return JsonResponse({
-                    "type": 4,
-                    "data": {"content": "❌ Invalid confirmation format", "flags": 64}
-                }, status=200)
-
         elif action == 'cancel':
-            response_message = f"🔄 **Action Cancelled**: {leave_request.employee.name} - {leave_request.get_leave_type_display()}"
+            # Rebuild the original leave request embed
+            paid_status = "Paid" if leave_request.is_paid else "Unpaid"
+            leave_type_display = leave_request.get_leave_type_display()
+            nepal_tz = pytz.timezone('Asia/Kathmandu')
+            applied_datetime_nepal = leave_request.applied_at.astimezone(nepal_tz)
+            applied_datetime = applied_datetime_nepal.strftime('%d %B %Y at %I:%M %p')
+            
+            embed = {
+                "title": f"{leave_request.employee.user.get_full_name()} - {paid_status} {leave_type_display} Leave Request",
+                "color": 3447003, 
+                "fields": [
+                    {
+                        "name": "Employee Name",
+                        "value": leave_request.employee.user.get_full_name(),
+                        "inline": False
+                    },
+                    {
+                        "name": "Duration",
+                        "value": f"{leave_request.start_date.strftime('%d %B %Y')} to {leave_request.end_date.strftime('%d %B %Y')}",
+                        "inline": False
+                    },
+                    {
+                        "name": "Leave Type",
+                        "value": leave_type_display,
+                        "inline": True
+                    },
+                    {
+                        "name": "Session",
+                        "value": leave_request.get_session_display(),
+                        "inline": True
+                    },
+                    {
+                        "name": "Total Day/s",
+                        "value": f"{leave_request.total_days()} day(s)",
+                        "inline": True
+                    },
+                    {
+                        "name": "Reason",
+                        "value": leave_request.reason or "No reason provided",
+                        "inline": False
+                    },
+                    {
+                        "name": "Date and time of request",
+                        "value": applied_datetime,
+                        "inline": False
+                    }
+                ],
+                "timestamp": datetime.now().isoformat()
+            }
             
             return JsonResponse({
                 "type": 7,
                 "data": {
-                    "content": response_message,
+                    "embeds": [embed],
                     "components": [
                         {
                             "type": 1,
@@ -228,7 +248,46 @@ def discord_interactions(request):
         custom_id = data.get('data', {}).get('custom_id', '')
         parts = custom_id.split('_')
         
-        if len(parts) == 4 and parts[0] == 'leave' and parts[1] == 'reject' and parts[2] == 'modal':
+        # Handle approve modal submission
+        if len(parts) == 4 and parts[0] == 'leave' and parts[1] == 'approve' and parts[2] == 'modal':
+            try:
+                leave_id = int(parts[3])
+            except (ValueError, IndexError):
+                return JsonResponse({
+                    "type": 4,
+                    "data": {
+                        "content": "❌ Invalid leave request ID",
+                        "flags": 64
+                    }
+                }, status=200)
+
+            try:
+                leave_request = LeaveRequest.objects.get(id=leave_id)
+            except LeaveRequest.DoesNotExist:
+                return JsonResponse({
+                    "type": 4,
+                    "data": {
+                        "content": "❌ Leave request not found",
+                        "flags": 64
+                    }
+                }, status=200)
+
+            # No need to validate input - just submitting the modal is confirmation enough
+            leave_request.status = 'APPROVED'
+            leave_request.save(update_fields=['status'])
+            
+            response_message = f"✅ **APPROVED**: {leave_request.employee.name} - {leave_request.get_leave_type_display()}\n\n📢 Posted to leaves_and_notices channel"
+            
+            return JsonResponse({
+                "type": 7,
+                "data": {
+                    "content": response_message,
+                    "components": []
+                }
+            }, status=200)
+        
+        # Handle reject modal submission
+        elif len(parts) == 4 and parts[0] == 'leave' and parts[1] == 'reject' and parts[2] == 'modal':
             try:
                 leave_id = int(parts[3])
             except (ValueError, IndexError):
