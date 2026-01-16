@@ -41,6 +41,11 @@ class LeaveRequest(models.Model):
     is_paid = models.BooleanField(default=False)
     applied_at = models.DateTimeField(auto_now_add=True)
     rejection_reason = models.TextField(blank=True, null=True)
+    discord_message_id = models.CharField(
+        max_length=50,
+        null=True,
+        blank=True
+    )
 
     def total_days(self):
         days = (self.end_date - self.start_date).days + 1

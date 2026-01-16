@@ -27,6 +27,5 @@ urlpatterns = [
     path('dashboard/stats/', AdminDashboardStatsView.as_view(), name='dashboard-stats'),
 
     # path('admin/', admin.site.urls),
-
-    path("api/cookie/", RefreshTokenView.as_view()),
+    path("cookie/", RefreshTokenView.as_view()),
 ]
