@@ -227,9 +227,11 @@ def get_recent_activities(request):
         return Response([], status=status.HTTP_200_OK)
 
     activities = []
+    now = timezone.now()  
+
     recent_requests = LeaveRequest.objects.filter(
         employee=employee,
-        applied_at__gte=datetime.now() - timedelta(days=30)
+        applied_at__gte=now - timedelta(days=30)  
     ).order_by('-applied_at')[:10]
 
     for req in recent_requests:
@@ -246,6 +248,7 @@ def get_recent_activities(request):
         })
 
     return Response(activities[:8], status=status.HTTP_200_OK)
+
 
 # CALENDAR DAYS
 

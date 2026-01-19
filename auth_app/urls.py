@@ -1,5 +1,4 @@
 from django.urls import path
-from django.contrib import admin
 from .views import LoginView, RegisterView, SetRefreshCookieView, UpdateEmailView, RefreshTokenView
 
 urlpatterns = [

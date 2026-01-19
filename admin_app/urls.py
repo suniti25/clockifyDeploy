@@ -1,14 +1,7 @@
 from django.urls import path
 
 from auth_app.views import RefreshTokenView
-from discord_app import admin
-from .views import (
-    AllUsersDetailView,
-    AllEmployeesDetailView,
-    UserDetailView,
-    AdminDashboardStatsView,
-    EmployeesByRoleView,
-)
+from .views import (AllUsersDetailView,AllEmployeesDetailView,UserDetailView,AdminDashboardStatsView,EmployeesByRoleView,)
 
 urlpatterns = [
     # Get all users with details

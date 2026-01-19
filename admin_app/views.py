@@ -2,13 +2,11 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
+from datetime import date
+from django.utils import timezone
 from django.contrib.auth.models import User
 from user_app.models import Employee, Profile
-from .serializers import (
-    AllUsersDetailSerializer,
-    EmployeeDetailSerializer,
-)
-
+from .serializers import (AllUsersDetailSerializer,EmployeeDetailSerializer,)
 
 class AllUsersDetailView(APIView):
     """
@@ -135,30 +133,31 @@ class AdminDashboardStatsView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
-    def get(self, request):
-        # Check if user is admin
-        try:
-            user_profile = request.user.profile
-            if user_profile.role != 'ADMIN':
-                return Response(
-                    {'error': 'Only admins can access this endpoint'},
-                    status=status.HTTP_403_FORBIDDEN
-                )
-        except Profile.DoesNotExist:
+def get(self, request):
+    # Check if user is admin
+    try:
+        user_profile = request.user.profile
+        if user_profile.role != 'ADMIN':
             return Response(
-                {'error': 'User profile not found'},
+                {'error': 'Only admins can access this endpoint'},
                 status=status.HTTP_403_FORBIDDEN
             )
+    except Profile.DoesNotExist:
+        return Response(
+            {'error': 'User profile not found'},
+            status=status.HTTP_403_FORBIDDEN
+        )
 
-        stats = {
-            'total_users': User.objects.count(),
-            'total_employees': Employee.objects.count(),
-            'active_users': User.objects.filter(is_active=True).count(),
-            'inactive_users': User.objects.filter(is_active=False).count(),
-            'total_admins': Profile.objects.filter(role='ADMIN').count(),
-            'total_employee_role': Profile.objects.filter(role='EMPLOYEE').count(),
-            'users_on_probation': Employee.objects.filter(
-                probation_end_date__gte=__import__('datetime').date.today()
-            ).count(),
-        }
-        return Response(stats, status=status.HTTP_200_OK)
+    stats = {
+        'total_users': User.objects.count(),
+        'total_employees': Employee.objects.count(),
+        'active_users': User.objects.filter(is_active=True).count(),
+        'inactive_users': User.objects.filter(is_active=False).count(),
+        'total_admins': Profile.objects.filter(role='ADMIN').count(),
+        'total_employee_role': Profile.objects.filter(role='EMPLOYEE').count(),
+        'users_on_probation': Employee.objects.filter(
+            probation_end_date__gte=timezone.localdate()
+        ).count(),
+    }
+    return Response(stats, status=status.HTTP_200_OK)
+

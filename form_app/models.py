@@ -1,7 +1,5 @@
 from django.db import models
 from user_app.models import Employee
-from datetime import timedelta
-
 
 class LeaveRequest(models.Model):
 

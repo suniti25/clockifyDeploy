@@ -1,16 +1,9 @@
-from django.shortcuts import render
-from django.utils.decorators import method_decorator
-from django.contrib import admin
 from rest_framework.views import APIView
 from rest_framework.response import Response 
 from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework_simplejwt.tokens import RefreshToken
-from rest_framework_simplejwt.exceptions import TokenError, InvalidToken
-from django.views.decorators.csrf import csrf_exempt
-from django.conf import settings
-from datetime import timedelta
-import random
+from rest_framework_simplejwt.exceptions import TokenError
 
 from rest_framework.authentication import SessionAuthentication
 from .serializers import LoginSerializer, RegisterSerializer, UpdateEmailSerializer
