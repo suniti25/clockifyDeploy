@@ -32,7 +32,8 @@ def env_list(key: str, default=None, sep: str = ","):
 
 SECRET_KEY = os.getenv("SECRET_KEY")
 if not SECRET_KEY:
-    raise RuntimeError("SECRET_KEY is not set. Put it in .env or environment variables.")
+    raise RuntimeError("Missing required configuration: SECRET_KEY")
+
 
 DEBUG = env_bool("DEBUG", False)
 

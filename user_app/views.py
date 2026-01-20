@@ -16,7 +16,7 @@ from .serializers import ProfileSerializer
 
 def year_reset(year: int, month: int, day: int) -> date:
     """
-  Handles leap years also.
+    Handles leap years also.
     """
     try:
         return date(year, month, day)
@@ -69,19 +69,16 @@ def carry_forward_only(employee, prev_start: date, prev_end: date) -> float:
 
 
 def _approved_requests_in_window(employee, window_start: date, window_end_exclusive: date):
-    """
-    Fetch approved leaves that overlap the leave-year window.
-    window_end_exclusive is exclusive.
-    """
     window_end_inclusive = window_end_exclusive - timedelta(days=1)
 
     return LeaveRequest.objects.filter(
         employee=employee,
         status="APPROVED",
-        # overlap condition:
+        is_paid=True, 
         start_date__lte=window_end_inclusive,
         end_date__gte=window_start,
     )
+
 
 
 def _group_used_by_type(approved_requests):
@@ -296,7 +293,7 @@ def get_notifications(request):
         elif req.status == "REJECTED":
             notifications.append(
                 {
-                    "id": req.id + 2000,
+                    "id": f"leave:{req.id}:rejected",
                     "title": "Leave Rejected",
                     "message": f"Your {req.get_leave_type_display().lower()} request for {date_range} was rejected",
                     "time": time_ago,
@@ -306,9 +303,9 @@ def get_notifications(request):
         elif req.status == "PENDING":
             notifications.append(
                 {
-                    "id": req.id + 1000,
+                    "id": f"leave:{req.id}:pending",
                     "title": f"{req.get_leave_type_display()} Request Pending",
-                    "message": f"Your {req.get_leave_type_display().lower()} request is pending manager approval",
+                    "message": f"Your {req.get_leave_type_display().lower()} request is pending for approval",
                     "time": time_ago,
                     "read": True,
                 }
@@ -331,10 +328,13 @@ def get_recent_activities(request):
 
     now = timezone.now()
 
-    recent_requests = LeaveRequest.objects.filter(
-        employee=employee,
-        applied_at__gte=now - timedelta(days=30),
-    ).order_by("-applied_at")[:10]
+    recent_requests = (
+        LeaveRequest.objects.filter(
+            employee=employee,
+            applied_at__gte=now - timedelta(days=30),
+        )
+        .order_by("-applied_at")[:10]
+    )
 
     activities = []
     for req in recent_requests:
@@ -342,17 +342,40 @@ def get_recent_activities(request):
         if req.start_date != req.end_date:
             date_range += f" - {req.end_date.strftime('%b %d, %Y')}"
 
+        if req.status == "APPROVED":
+            title = "Leave Approved"
+        elif req.status == "REJECTED":
+            title = "Leave Rejected"
+        else:
+            title = f"{req.get_leave_type_display()} Request Submitted"
+
+        time_display = "Awaiting approval"
+        if req.status in ["APPROVED", "REJECTED"]:
+            time_diff = now - req.applied_at
+
+            if time_diff.days == 0:
+                hours = time_diff.seconds // 3600
+                if hours > 0:
+                    time_display = f"{hours} hour{'s' if hours > 1 else ''} ago"
+                else:
+                    minutes = time_diff.seconds // 60
+                    time_display = f"{minutes} minute{'s' if minutes > 1 else ''} ago"
+            else:
+                time_display = f"{time_diff.days} day{'s' if time_diff.days > 1 else ''} ago"
+
         activities.append(
             {
-                "id": req.id,
+                "id": f"activity:{req.id}:{req.status.lower()}",
                 "type": "request",
-                "title": f"{req.get_leave_type_display()} Request Submitted",
+                "title": title,
                 "description": f"{date_range} ({req.total_days()} days)",
-                "time": "Recently",
+                "time": time_display,
+                "status": req.status,
             }
         )
 
     return Response(activities[:8], status=status.HTTP_200_OK)
+
 
 # CALENDAR DAYS
 @api_view(["GET"])
