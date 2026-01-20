@@ -8,9 +8,12 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # LOAD ENV VARIABLES
 try:
     from dotenv import load_dotenv
+except ImportError:
+    load_dotenv = None
+
+if load_dotenv:
     load_dotenv(BASE_DIR / ".env")
-except Exception:
-    pass
+
 
 
 def env_bool(key: str, default: bool = False) -> bool:

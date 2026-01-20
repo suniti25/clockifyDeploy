@@ -29,7 +29,7 @@ def apply_leave(request):
     if serializer.is_valid():
         leave = serializer.save()
 
-        # Send Discord notification (optional)
+        # Send Discord notification 
         try:
             from discord_app.services import send_leave_request_to_admin
             send_leave_request_to_admin(leave)

@@ -174,11 +174,11 @@ def discord_interactions(request):
             leave_request.status = "APPROVED"
             leave_request.save(update_fields=["status"])
 
-            # Update admin message in Discord (best-effort)
-            try:
-                update_discord_leave_message(leave_request)
-            except Exception:
-                logger.exception("Failed to update Discord message after approval")
+        # Update admin message in Discord (best-effort)
+        try:
+            update_discord_leave_message(leave_request)
+        except Exception:
+            logger.exception("Failed to update Discord message after approval")
 
             return JsonResponse(
                 {"type": 7, "data": {"content": "Leave approved", "components": []}}
