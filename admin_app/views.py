@@ -6,7 +6,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from user_app.models import Employee, Profile
-from form_app.models import LeaveRequest  # ✅ needed for dashboard cards
+from form_app.models import LeaveRequest 
 
 from .serializers import AllUsersDetailSerializer, EmployeeDetailSerializer
 
@@ -121,14 +121,6 @@ class AdminDashboardSummaryView(APIView):
 
         pending_requests = LeaveRequest.objects.filter(status="PENDING").count()
 
-        #  if you have approved_at in model:
-        # approved_today = LeaveRequest.objects.filter(
-        #     status="APPROVED",
-        #     approved_at__date=today
-        # ).count()
-
-        # Fallback: counts leaves approved today using updated status today is not possible without approved_at,
-        # so we use applied_at__date for now (not perfect, but stable until approved_at is added)
         approved_today = LeaveRequest.objects.filter(status="APPROVED", applied_at__date=today).count()
 
         return Response(
@@ -153,12 +145,7 @@ class AdminDashboardStatsView(APIView):
             return err
 
         stats = {
-            "total_users": User.objects.count(),
             "total_employees": Employee.objects.count(),
-            "active_users": User.objects.filter(is_active=True).count(),
-            "inactive_users": User.objects.filter(is_active=False).count(),
-            "total_admins": Profile.objects.filter(role="ADMIN").count(),
-            "total_employee_role": Profile.objects.filter(role="EMPLOYEE").count(),
             "users_on_probation": Employee.objects.filter(
                 probation_end_date__gt=timezone.localdate()
             ).count(),

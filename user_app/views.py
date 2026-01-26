@@ -217,6 +217,15 @@ def get_recent_activities(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def get_calendar_days(request):
+    """
+    GET /api/user/calendar/?year=2027&month=05
+
+    - Protected endpoint (IsAuthenticated)
+    - Uses year/month query params
+    - Only shows APPROVED leaves for the logged-in employee
+    - Returns calendar grid format:
+      [{day: null, events: []}, ..., {day: 1, events:[...]}, ...]
+    """
     try:
         profile = Profile.objects.select_related("employee").get(user=request.user)
     except Profile.DoesNotExist:
@@ -227,7 +236,23 @@ def get_calendar_days(request):
         return Response([], status=status.HTTP_200_OK)
 
     today = date.today()
-    year, month = today.year, today.month
+    year_str = request.GET.get("year")
+    month_str = request.GET.get("month")
+
+    try:
+        year = int(year_str) if year_str else today.year
+        month = int(month_str) if month_str else today.month
+    except ValueError:
+        return Response(
+            {"error": "Invalid year/month. Use numbers like ?year=2027&month=5"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if month < 1 or month > 12:
+        return Response(
+            {"error": "Invalid month. Must be between 1 and 12."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
     first_weekday, days_in_month = monthrange(year, month)
     month_start = date(year, month, 1)
@@ -238,19 +263,25 @@ def get_calendar_days(request):
         status="APPROVED",
         start_date__lte=month_end,
         end_date__gte=month_start,
-    )
+    ).only("start_date", "end_date", "leave_type")
+
 
     days = [{"day": None, "events": []} for _ in range(first_weekday)]
 
-    for day in range(1, days_in_month + 1):
-        current_date = date(year, month, day)
-        events = []
+    for day_num in range(1, days_in_month + 1):
+        current_date = date(year, month, day_num)
 
+        events = []
         for leave in month_leaves:
             if leave.start_date <= current_date <= leave.end_date:
-                events.append({"day": day, "type": leave.leave_type.lower()})
+                events.append(
+                    {
+                        "day": day_num,
+                        "type": leave.leave_type.lower(),
+                    }
+                )
 
-        days.append({"day": day, "events": events})
+        days.append({"day": day_num, "events": events})
 
     return Response(days, status=status.HTTP_200_OK)
 
@@ -259,8 +290,8 @@ def get_calendar_days(request):
 @permission_classes([IsAuthenticated])
 def get_upcoming_leaves(request):
     """
-    GET /api/user/upcoming-leaves/?limit=5
-    Returns upcoming leaves (PENDING + APPROVED) from today onwards.
+    Returns ONLY approved leaves that are upcoming (start_date >= today)
+    for the logged-in employee.
     """
     try:
         profile = Profile.objects.select_related("employee").get(user=request.user)
@@ -270,43 +301,36 @@ def get_upcoming_leaves(request):
     employee = profile.employee
     if not employee:
         return Response([], status=status.HTTP_200_OK)
-
-    today = timezone.localdate()
-
+    # limit
     try:
         limit = int(request.GET.get("limit", 5))
     except ValueError:
         limit = 5
     limit = min(max(limit, 1), 20)
 
+    today = date.today()
+
     qs = (
         LeaveRequest.objects.filter(
             employee=employee,
-            start_date__gte=today,
-            status__in=["PENDING", "APPROVED"],
+            status="APPROVED",          
+            start_date__gte=today,      
         )
-        .order_by("start_date", "end_date", "-applied_at")[:limit]
-    )
+        .order_by("start_date")
+        .only("id", "leave_type", "start_date", "end_date", "status")
+    )[:limit]
 
     results = []
     for req in qs:
-        leave_name = req.get_leave_type_display()
-
-        # simple message for UI
-        if req.status == "APPROVED":
-            message = f"Upcoming: {leave_name} leave approved"
-        else:
-            message = f"Upcoming: {leave_name} leave pending approval"
-
         results.append(
             {
                 "id": str(req.id),
-                "days": float(req.total_days()),  # supports 0.5
-                "status": req.status,
-                "leave_type": leave_name,
+                "leave_type": req.get_leave_type_display(),
                 "start_date": req.start_date.isoformat(),
                 "end_date": req.end_date.isoformat(),
-                "message": message,
+                "days": req.total_days(),   
+                "status": req.status,       
+                "message": f"{req.get_leave_type_display()} leave upcoming",
             }
         )
 
