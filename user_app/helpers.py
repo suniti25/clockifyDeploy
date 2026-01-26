@@ -48,16 +48,17 @@ def carry_forward_only(employee, prev_start: date, prev_end: date) -> float:
     yearly_vacation = LEAVE_LIMITS.get("VACATION", 0)
 
     prev_used = sum(
-        lr.total_days()
-        for lr in LeaveRequest.objects.filter(
-            employee=employee,
-            leave_type="VACATION",
-            status="APPROVED",
-            is_paid=True,
-            start_date__gte=prev_start,
-            start_date__lt=prev_end,
-        )
+    lr.total_days()
+    for lr in LeaveRequest.objects.filter(
+        employee=employee,
+        leave_type="VACATION",
+        status="APPROVED",
+        is_paid=True,
+        start_date__lt=prev_end,
+        end_date__gte=prev_start,
     )
+)
+
 
     prev_remaining = max(yearly_vacation - prev_used, 0)
     carry = prev_remaining * 0.5
@@ -161,34 +162,19 @@ def parse_month_param(month_str: str):
 
 
 def apply_history_filters(qs, search="", month="", leave_type="", status_filter=""):
-    """
-    Applies frontend filters:
-    - search
-    - month
-    - type
-    - status
-    """
-    search = (search or "").strip()
-    month = (month or "").strip()
-    leave_type = (leave_type or "").strip()
-    status_filter = (status_filter or "").strip()
-
-    if leave_type:
-        qs = qs.filter(leave_type=leave_type)
+    if search:
+        qs = qs.filter(leave_type__icontains=search)
 
     if status_filter:
-        qs = qs.filter(status=status_filter)
+        qs = qs.filter(status=status_filter.upper())
+
+    if leave_type:
+        qs = qs.filter(leave_type=leave_type.upper())
 
     if month:
-        m_start, m_end = parse_month_param(month)
-        if m_start and m_end:
-            qs = qs.filter(start_date__lt=m_end, end_date__gte=m_start)
-
-    if search:
-        qs = qs.filter(
-            Q(reason__icontains=search) |
-            Q(leave_type__icontains=search) |
-            Q(status__icontains=search)
-        )
+        try:
+            qs = qs.filter(start_date__month=int(month))
+        except ValueError:
+            pass
 
     return qs

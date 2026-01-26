@@ -52,8 +52,9 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
 
     "user_app.apps.UserAppConfig",
+    
     "auth_app",
-    "form_app",
+    "form_app.apps.FormAppConfig",
     "admin_app",
     "discord_app",
 
@@ -143,22 +144,27 @@ SIMPLE_JWT = {
     "BLACKLIST_AFTER_ROTATION": False,
 }
 
-
-
-# CORS 
+# CORS
 
 CORS_ALLOW_CREDENTIALS = True
 
+CORS_ALLOWED_ORIGINS = env_list("CORS_ALLOWED_ORIGINS")
 
-CORS_ALLOWED_ORIGINS = env_list(
-    "CORS_ALLOWED_ORIGINS",
-    default=[
+# In production, DO NOT allow fallback origins
+if not DEBUG and not CORS_ALLOWED_ORIGINS:
+    raise RuntimeError(
+        "CORS_ALLOWED_ORIGINS must be set in production when CORS_ALLOW_CREDENTIALS=True"
+    )
+
+# Safe defaults ONLY for local development
+if DEBUG and not CORS_ALLOWED_ORIGINS:
+    CORS_ALLOWED_ORIGINS = [
         "http://localhost:3000",
         "http://localhost:5173",
         "http://127.0.0.1:3000",
         "http://127.0.0.1:5173",
-    ],
-)
+    ]
+
 
 #  CSRF
 

@@ -1,9 +1,12 @@
-from datetime import date
-from django.utils.timezone import localdate
+from django.db import transaction
 from rest_framework import serializers
 
-from .models import LeaveRequest
-from .constants import LEAVE_LIMITS
+from form_app.models import LeaveRequest
+from form_app.helpers import (
+    validate_leave_application_inputs,
+    compute_leave_days_for_payload,
+    compute_paid_status,
+)
 
 
 class LeaveCreateSerializer(serializers.ModelSerializer):
@@ -13,100 +16,38 @@ class LeaveCreateSerializer(serializers.ModelSerializer):
 
     def validate(self, data):
         request = self.context["request"]
-        profile = request.user.profile
-        employee = profile.employee
+        profile = getattr(request.user, "profile", None)
+        employee = getattr(profile, "employee", None) if profile else None
 
-        start_date = data.get("start_date")
-        end_date = data.get("end_date")
-        leave_type = data.get("leave_type")
-        session = data.get("session")
-        today = localdate()
-
-        # Block admins here (single source of truth)
-        if profile.role == "ADMIN":
-            raise serializers.ValidationError("Admins cannot apply for leave.")
-
-        # Date validations
-        if start_date < today:
-            raise serializers.ValidationError(
-                "You cannot apply leave with a start date in the past."
-            )
-
-        if end_date < start_date:
-            raise serializers.ValidationError("End date cannot be earlier than start date.")
-
-        # Half-day validation
-        if session in ["AM", "PM"] and start_date != end_date:
-            raise serializers.ValidationError("AM/PM session can only be applied for a single day.")
-
-        # Overlapping leave check (pending + approved)
-        overlapping = LeaveRequest.objects.filter(
+        validate_leave_application_inputs(
+            profile=profile,
             employee=employee,
-            start_date__lte=end_date,
-            end_date__gte=start_date,
-            status__in=["PENDING", "APPROVED"],
+            start_date=data.get("start_date"),
+            end_date=data.get("end_date"),
+            leave_type=data.get("leave_type"),
+            session=data.get("session"),
+            reason=data.get("reason"),
+            instance_id=self.instance.id if self.instance else None,
         )
-        if self.instance:
-            overlapping = overlapping.exclude(id=self.instance.id)
-
-        if overlapping.exists():
-            raise serializers.ValidationError("You already have a leave applied for this date range.")
-
-        # Reason required
-        if leave_type in ["SICK", "WFH"] and not data.get("reason"):
-            raise serializers.ValidationError("Reason is required for SICK and WFH leave.")
-
         return data
 
-    def _leave_year_window(self, year: int):
-        start = date(year, 1, 1)
-        end = date(year, 12, 31)
-        return start, end
-
-    def _compute_paid_status(self, employee, leave_type: str, leave_days: float, instance_id=None) -> bool:
-        # probation => unpaid
-        is_paid = not employee.is_on_probation()
-
-        if not is_paid:
-            return False
-
-        # Only enforce limits for types configured in LEAVE_LIMITS
-        if leave_type not in LEAVE_LIMITS:
-            return True
-
-        year = localdate().year
-        start_of_year, end_of_year = self._leave_year_window(year)
-
-        qs = LeaveRequest.objects.filter(
-            employee=employee,
-            leave_type=leave_type,
-            status="APPROVED",
-            is_paid=True,
-            start_date__lte=end_of_year,
-            end_date__gte=start_of_year,
-        )
-
-        if instance_id:
-            qs = qs.exclude(id=instance_id)
-
-        used = sum(lr.total_days() for lr in qs)
-
-        if used + leave_days > LEAVE_LIMITS[leave_type]:
-            return False
-
-        return True
-
+    @transaction.atomic
     def create(self, validated_data):
         request = self.context["request"]
         employee = request.user.profile.employee
 
-        temp_leave = LeaveRequest(employee=employee, **validated_data)
-        leave_days = temp_leave.total_days()
+        leave_days = compute_leave_days_for_payload(employee=employee, payload=validated_data)
 
-        is_paid = self._compute_paid_status(employee, validated_data["leave_type"], leave_days)
+        is_paid = compute_paid_status(
+            employee=employee,
+            leave_type=validated_data["leave_type"],
+            leave_days=leave_days,
+            start_date=validated_data["start_date"],
+        )
 
         return LeaveRequest.objects.create(employee=employee, is_paid=is_paid, **validated_data)
 
+    @transaction.atomic
     def update(self, instance, validated_data):
         if instance.status != "PENDING":
             raise serializers.ValidationError("Only pending leave requests can be updated.")
@@ -115,12 +56,17 @@ class LeaveCreateSerializer(serializers.ModelSerializer):
             setattr(instance, field, value)
 
         leave_days = instance.total_days()
-        instance.is_paid = self._compute_paid_status(
-            instance.employee, instance.leave_type, leave_days, instance_id=instance.id
+        instance.is_paid = compute_paid_status(
+            employee=instance.employee,
+            leave_type=instance.leave_type,
+            leave_days=leave_days,
+            start_date=instance.start_date,
+            instance_id=instance.id,
         )
 
         instance.save()
         return instance
+
 
 class LeaveResponseSerializer(serializers.ModelSerializer):
     class Meta:

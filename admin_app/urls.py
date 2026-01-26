@@ -1,7 +1,14 @@
 from django.urls import path
 
 from auth_app.views import RefreshTokenView
-from .views import (AllUsersDetailView,AllEmployeesDetailView,UserDetailView,AdminDashboardStatsView,EmployeesByRoleView,  UserDetailView, AdminDashboardStatsView, AdminDashboardSummaryView,)
+from .views import (
+    AllUsersDetailView,
+    AllEmployeesDetailView,
+    UserDetailView,
+    AdminDashboardStatsView,
+    EmployeesByRoleView,
+    AdminDashboardSummaryView,
+)
 
 urlpatterns = [
     # Get all users with details

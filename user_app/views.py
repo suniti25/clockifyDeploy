@@ -1,5 +1,6 @@
 from datetime import date, timedelta
 from calendar import monthrange
+from collections import defaultdict
 
 from django.utils import timezone
 from rest_framework import status
@@ -214,6 +215,7 @@ def get_recent_activities(request):
     return Response([serialize_history_item(req) for req in qs], status=status.HTTP_200_OK)
 
 
+
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def get_calendar_days(request):
@@ -256,30 +258,38 @@ def get_calendar_days(request):
     month_start = date(year, month, 1)
     month_end = date(year, month, days_in_month)
 
-    month_leaves = LeaveRequest.objects.filter(
-        employee=employee,
-        status="APPROVED",
-        start_date__lte=month_end,
-        end_date__gte=month_start,
-    ).only("start_date", "end_date", "leave_type")
+    # Only fetch what we need
+    month_leaves = (
+        LeaveRequest.objects.filter(
+            employee=employee,
+            status="APPROVED",
+            start_date__lte=month_end,
+            end_date__gte=month_start,
+        )
+        .only("start_date", "end_date", "leave_type")
+    )
 
+    # Precompute day -> events
+    event_map = defaultdict(list)
 
+    for leave in month_leaves:
+        current = max(leave.start_date, month_start)
+        last = min(leave.end_date, month_end)
+
+        while current <= last:
+            event_map[current.day].append(
+                {
+                    "day": current.day,
+                    "type": leave.leave_type.lower(),
+                }
+            )
+            current += timedelta(days=1)
+
+    # Build calendar grid (leading blanks then 1..days_in_month)
     days = [{"day": None, "events": []} for _ in range(first_weekday)]
 
     for day_num in range(1, days_in_month + 1):
-        current_date = date(year, month, day_num)
-
-        events = []
-        for leave in month_leaves:
-            if leave.start_date <= current_date <= leave.end_date:
-                events.append(
-                    {
-                        "day": day_num,
-                        "type": leave.leave_type.lower(),
-                    }
-                )
-
-        days.append({"day": day_num, "events": events})
+        days.append({"day": day_num, "events": event_map.get(day_num, [])})
 
     return Response(days, status=status.HTTP_200_OK)
 

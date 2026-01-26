@@ -22,7 +22,6 @@ logger = logging.getLogger(__name__)
 DISCORD_PUBLIC_KEY = os.getenv("DISCORD_PUBLIC_KEY", "")
 
 # VERIFY DISCORD SIGNATURE
-
 def verify_discord_signature(request, body=None):
     signature = request.headers.get("X-Signature-Ed25519")
     timestamp = request.headers.get("X-Signature-Timestamp")
@@ -169,23 +168,21 @@ def discord_interactions(request):
                 }
             )
 
-        # APPROVE MODAL
+        # APPROVE MODAL (REPLACED AS YOU REQUESTED)
         if parts[:3] == ["leave", "approve", "modal"]:
             leave_request.status = "APPROVED"
             leave_request.save(update_fields=["status"])
 
-        # Update admin message in Discord (best-effort)
-        try:
-            update_discord_leave_message(leave_request)
-        except Exception:
-            logger.exception("Failed to update Discord message after approval")
+            try:
+                update_discord_leave_message(leave_request)
+            except Exception:
+                logger.exception("Failed to update Discord message after approval")
 
             return JsonResponse(
                 {"type": 7, "data": {"content": "Leave approved", "components": []}}
             )
 
         # REJECT MODAL
-
         if parts[:3] == ["leave", "reject", "modal"]:
             components = data.get("data", {}).get("components", [])
             rejection_reason = ""
