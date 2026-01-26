@@ -36,16 +36,28 @@ def get_leave_year_range(probation_end_date: date, today: date):
 
     return start, end
 
+from decimal import Decimal, ROUND_HALF_UP
+
+def _round_to_half_day(value: float) -> float:
+    """
+    Quantize to nearest 0.5 day:supported by half-day leave systems.
+  
+    """
+    d = Decimal(str(value))
+    half = Decimal("0.5")
+    return float((d / half).quantize(Decimal("1"), rounding=ROUND_HALF_UP) * half)
+
 
 def carry_forward_only(employee, prev_start: date, prev_end: date) -> float:
     """
     Carry forward is ONLY for VACATION leave.
-    Rule: 50% of unused VACATION leave
+    Rule: 50% of unused VACATION leave.
+    Returned value is rounded to nearest 0.5 day (half-day granularity).
     """
-    yearly_vacation = LEAVE_LIMITS.get("VACATION", 0)
+    yearly_vacation = float(LEAVE_LIMITS.get("VACATION", 0))
 
     prev_used = sum(
-        lr.total_days()
+        float(lr.total_days())
         for lr in LeaveRequest.objects.filter(
             employee=employee,
             leave_type="VACATION",
@@ -56,10 +68,18 @@ def carry_forward_only(employee, prev_start: date, prev_end: date) -> float:
         )
     )
 
-    prev_remaining = max(yearly_vacation - prev_used, 0)
-    carry = prev_remaining * 0.5
+    prev_remaining = max(yearly_vacation - prev_used, 0.0)
+    carry_raw = prev_remaining * 0.5
 
-    return round(carry, 1)
+    # quantize to supported step (0.5)
+    carry = _round_to_half_day(carry_raw)
+
+    # safety: never carry more than remaining * 0.5 due to rounding up
+    carry_cap = (int((carry_raw / 0.5)) * 0.5)  # floor to 0.5 steps
+    carry = min(carry, carry_cap)
+
+    return float(carry)
+
 
 
 def approved_requests_in_window(employee, start: date, end_exclusive: date):
@@ -76,22 +96,30 @@ def approved_requests_in_window(employee, start: date, end_exclusive: date):
         end_date__gte=start,
     )
 
+from datetime import date, timedelta
+
 def overlapping_days(req: LeaveRequest, window_start: date, window_end_exclusive: date) -> float:
-    """
-    Count only the days of this leave that overlap the given window.
-    Assumes leaves are day-based (full days). If you support half-day sessions,
-    handle that inside total_days() or extend this function.
-    """
+
     window_end_incl = window_end_exclusive - timedelta(days=1)
 
-    start = max(req.start_date, window_start)
-    end = min(req.end_date, window_end_incl)
+    overlap_start = max(req.start_date, window_start)
+    overlap_end = min(req.end_date, window_end_incl)
 
-    if start > end:
-        return 0
+    if overlap_start > overlap_end:
+        return 0.0
 
-    # inclusive day count
-    return float((end - start).days + 1)
+    overlap_days = (overlap_end - overlap_start).days + 1  
+
+    # If the overlapped portion is exactly one day, respect the request's session/half-day
+    if overlap_days == 1:
+       
+        if req.start_date == req.end_date:
+            return float(req.total_days())
+        return 1.0
+
+    # Multi-day overlap 
+    return float(overlap_days)
+
 
 
 def group_used_by_type(approved_requests, window_start: date, window_end_exclusive: date):
