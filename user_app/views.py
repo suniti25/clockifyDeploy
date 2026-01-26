@@ -218,8 +218,6 @@ def get_recent_activities(request):
 @permission_classes([IsAuthenticated])
 def get_calendar_days(request):
     """
-    GET /api/user/calendar/?year=2027&month=05
-
     - Protected endpoint (IsAuthenticated)
     - Uses year/month query params
     - Only shows APPROVED leaves for the logged-in employee
