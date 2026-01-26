@@ -38,7 +38,7 @@ def hello_dashboard(request):
     if not employee:
         return Response({"error": "Employee record not found"}, status=status.HTTP_404_NOT_FOUND)
 
-    today = date.today()
+    today = timezone.localdate()
     is_on_probation = employee.is_on_probation()
 
     leave_year_start, leave_year_end = get_leave_year_range(employee.probation_end_date, today)
@@ -101,7 +101,7 @@ def get_leave_balances(request):
     if not employee:
         return Response([], status=status.HTTP_200_OK)
 
-    today = date.today()
+    today = timezone.localdate()
     is_on_probation = employee.is_on_probation()
 
     leave_year_start, leave_year_end = get_leave_year_range(employee.probation_end_date, today)
@@ -235,7 +235,7 @@ def get_calendar_days(request):
     if not employee:
         return Response([], status=status.HTTP_200_OK)
 
-    today = date.today()
+    today = timezone.localdate()
     year_str = request.GET.get("year")
     month_str = request.GET.get("month")
 
@@ -316,7 +316,7 @@ def get_upcoming_leaves(request):
         limit = 5
     limit = min(max(limit, 1), 20)
 
-    today = date.today()
+    today = timezone.localdate()
 
     qs = (
         LeaveRequest.objects.filter(
@@ -325,7 +325,7 @@ def get_upcoming_leaves(request):
             start_date__gte=today,      
         )
         .order_by("start_date")
-        .only("id", "leave_type", "start_date", "end_date", "status")
+        .only("id", "leave_type", "start_date", "end_date", "status","session")
     )[:limit]
 
     results = []

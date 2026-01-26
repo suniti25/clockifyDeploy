@@ -102,10 +102,10 @@ class UserDetailView(APIView):
 
 class AdminDashboardSummaryView(APIView):
     """
-     Cards for Admin Dashboard UI:
+    Cards for Admin Dashboard UI:
     - team_members: total employees who have EMPLOYEE role
     - pending_requests: total pending leave requests
-    - approved_today: total approved today
+    - approved_requests_applied_today: applied today AND currently approved
     """
     permission_classes = [IsAuthenticated]
 
@@ -116,21 +116,23 @@ class AdminDashboardSummaryView(APIView):
 
         today = timezone.localdate()
 
-        # Team members = user profiles that are EMPLOYEE AND have Employee account
         team_members = Profile.objects.filter(role="EMPLOYEE", user__employee__isnull=False).count()
-
         pending_requests = LeaveRequest.objects.filter(status="PENDING").count()
 
-        approved_today = LeaveRequest.objects.filter(status="APPROVED", applied_at__date=today).count()
+        approved_requests_applied_today = LeaveRequest.objects.filter(
+            status="APPROVED",
+            applied_at__date=today
+        ).count()
 
         return Response(
             {
                 "team_members": team_members,
                 "pending_requests": pending_requests,
-                "approved_today": approved_today,
+                "approved_requests_applied_today": approved_requests_applied_today,
             },
             status=status.HTTP_200_OK,
         )
+
 
 
 class AdminDashboardStatsView(APIView):
@@ -144,10 +146,12 @@ class AdminDashboardStatsView(APIView):
         if err:
             return err
 
+        today = timezone.localdate()
+
         stats = {
             "total_employees": Employee.objects.count(),
             "users_on_probation": Employee.objects.filter(
-                probation_end_date__gt=timezone.localdate()
+                probation_end_date__gte=today
             ).count(),
         }
 

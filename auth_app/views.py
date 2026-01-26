@@ -61,7 +61,7 @@ class SetRefreshCookieView(APIView):
             str(refresh),
             httponly=True,
             secure=True,
-            samesite="None",
+            samesite="Lax",
             max_age=60*60*24*30,  # 30 days
         )
 

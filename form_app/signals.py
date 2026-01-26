@@ -1,23 +1,22 @@
-from asyncio.log import logger
+import logging
+
 from django.db.models.signals import post_save
 from django.dispatch import receiver
+
 from form_app.models import LeaveRequest
-import logging
+from discord_app.services import send_leave_request_to_admin
+
+logger = logging.getLogger(__name__)
 
 
 @receiver(post_save, sender=LeaveRequest)
-def notify_on_leave_approval(sender, instance, created, update_fields, **kwargs):
+def notify_on_leave_approval(sender, instance, created, update_fields=None, **kwargs):
     """
     Send Discord notification when a leave request is approved
     """
-    if not created and update_fields and 'status' in update_fields:
-        
-        if instance.status == 'APPROVED':
-            
-            try:
-                from discord_app.services import send_approved_leave_to_employees
-                send_approved_leave_to_employees(instance)
-            except ImportError:
-                logger = logging.getLogger(__name__)
-
-                logger.warning("Discord service not available")
+    try:
+        # Only notify when status becomes APPROVED
+        if not created and instance.status == "APPROVED":
+            send_leave_request_to_admin(instance)
+    except Exception:
+        logger.exception("Failed to send leave approval notification to Discord")

@@ -6,6 +6,9 @@ from django.http import JsonResponse
 from django.views.decorators.http import require_http_methods
 from django.views.decorators.csrf import csrf_exempt
 from django.shortcuts import get_object_or_404
+from django.db import transaction
+
+from form_app.helpers import compute_paid_status
 
 from nacl.signing import VerifyKey
 from nacl.exceptions import BadSignatureError
@@ -168,11 +171,45 @@ def discord_interactions(request):
                 }
             )
 
-        # APPROVE MODAL (REPLACED AS YOU REQUESTED)
+        # APPROVE MODAL (UPDATED: recompute is_paid at approval time)
         if parts[:3] == ["leave", "approve", "modal"]:
-            leave_request.status = "APPROVED"
-            leave_request.save(update_fields=["status"])
+            try:
+                with transaction.atomic():
+                    # Lock row to avoid race conditions (double-approval)
+                    leave_request = (
+                        LeaveRequest.objects.select_for_update()
+                        .select_related("employee")
+                        .get(id=leave_request.id)
+                    )
 
+                    if leave_request.status != "PENDING":
+                        return JsonResponse(
+                            {
+                                "type": 4,
+                                "data": {"content": "This request is already processed.", "flags": 64},
+                            }
+                        )
+
+                    employee = leave_request.employee
+                    leave_days = leave_request.total_days()
+
+                    leave_request.is_paid = compute_paid_status(
+                        employee=employee,
+                        leave_type=leave_request.leave_type,
+                        leave_days=leave_days,
+                        start_date=leave_request.start_date,
+                        instance_id=leave_request.id,
+                    )
+
+                    leave_request.status = "APPROVED"
+                    leave_request.save(update_fields=["status", "is_paid"])
+            except Exception:
+                logger.exception("Failed to approve leave (recompute is_paid)")
+                return JsonResponse(
+                    {"type": 4, "data": {"content": "Failed to approve leave", "flags": 64}}
+                )
+
+            # Best-effort Discord update
             try:
                 update_discord_leave_message(leave_request)
             except Exception:

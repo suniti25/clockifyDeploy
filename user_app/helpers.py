@@ -5,10 +5,8 @@ from django.db.models import Q
 from form_app.constants import LEAVE_LIMITS
 from form_app.models import LeaveRequest
 
-
-# ==============================
 # LEAVE YEAR HELPERS
-# ==============================
+
 
 def year_reset(year: int, month: int, day: int) -> date:
     """
@@ -48,17 +46,16 @@ def carry_forward_only(employee, prev_start: date, prev_end: date) -> float:
     yearly_vacation = LEAVE_LIMITS.get("VACATION", 0)
 
     prev_used = sum(
-    lr.total_days()
-    for lr in LeaveRequest.objects.filter(
-        employee=employee,
-        leave_type="VACATION",
-        status="APPROVED",
-        is_paid=True,
-        start_date__lt=prev_end,
-        end_date__gte=prev_start,
+        lr.total_days()
+        for lr in LeaveRequest.objects.filter(
+            employee=employee,
+            leave_type="VACATION",
+            status="APPROVED",
+            is_paid=True,
+            start_date__lt=prev_end,
+            end_date__gte=prev_start,
+        )
     )
-)
-
 
     prev_remaining = max(yearly_vacation - prev_used, 0)
     carry = prev_remaining * 0.5
@@ -92,9 +89,8 @@ def group_used_by_type(approved_requests):
     return used
 
 
-# ==============================
 # HISTORY HELPERS
-# ==============================
+
 
 def history_queryset(employee):
     """
@@ -172,9 +168,18 @@ def apply_history_filters(qs, search="", month="", leave_type="", status_filter=
         qs = qs.filter(leave_type=leave_type.upper())
 
     if month:
-        try:
-            qs = qs.filter(start_date__month=int(month))
-        except ValueError:
-            pass
+        month = str(month).strip()
+
+        # Best: month includes year, like "2026-01" or "January 2026"
+        start, end = parse_month_param(month)
+        if start and end:
+            qs = qs.filter(start_date__gte=start, start_date__lt=end)
+        else:
+            # Fallback: month is numeric only ("1".."12") -> mixes years by nature
+            try:
+                qs = qs.filter(start_date__month=int(month))
+            except ValueError:
+                # Ignore invalid month filter input and return unfiltered queryset
+                return qs
 
     return qs
