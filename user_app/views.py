@@ -12,85 +12,9 @@ from form_app.models import LeaveRequest
 from .models import Profile
 from .serializers import ProfileSerializer
 
-# Leave year
+from .helpers import (get_leave_year_range,carry_forward_only,approved_requests_in_window,group_used_by_type,history_queryset,
+serialize_history_item, apply_history_filters,)
 
-def year_reset(year: int, month: int, day: int) -> date:
-    """
-    Handles leap years also.
-    """
-    try:
-        return date(year, month, day)
-    except ValueError:
-        return date(year, month, 28)
-
-
-def get_leave_year_range(probation_end_date: date, today: date):
-    """
-    Leave year is anchored to probation_end_date (month/day).
-    """
-    anchor_month = probation_end_date.month
-    anchor_day = probation_end_date.day
-
-    start_this_year = year_reset(today.year, anchor_month, anchor_day)
-
-    if today >= start_this_year:
-        start = start_this_year
-        end = year_reset(today.year + 1, anchor_month, anchor_day)
-    else:
-        start = year_reset(today.year - 1, anchor_month, anchor_day)
-        end = year_reset(today.year, anchor_month, anchor_day)
-
-    return start, end
-
-
-def carry_forward_only(employee, prev_start: date, prev_end: date) -> float:
-    """
-    Carry forward is ONLY for VACATION.
-    """
-    yearly_vacation = LEAVE_LIMITS.get("VACATION", 0)
-
-    prev_used = sum(
-        lr.total_days()
-        for lr in LeaveRequest.objects.filter(
-            employee=employee,
-            leave_type="VACATION",
-            status="APPROVED",
-            is_paid=True,
-            start_date__gte=prev_start,
-            start_date__lt=prev_end,
-        )
-    )
-
-    prev_remaining = max(yearly_vacation - prev_used, 0)
-    carry = prev_remaining * 0.5
-
-    # keep half-day support
-    return round(carry, 1)
-
-
-def _approved_requests_in_window(employee, window_start: date, window_end_exclusive: date):
-    window_end_inclusive = window_end_exclusive - timedelta(days=1)
-
-    return LeaveRequest.objects.filter(
-        employee=employee,
-        status="APPROVED",
-        is_paid=True, 
-        start_date__lte=window_end_inclusive,
-        end_date__gte=window_start,
-    )
-
-
-
-def _group_used_by_type(approved_requests):
-    """
-    Single-pass grouping for used days per leave_type.
-    """
-    used_by_type = {}
-    for req in approved_requests:
-        used_by_type[req.leave_type] = used_by_type.get(req.leave_type, 0) + req.total_days()
-    return used_by_type
-
-# USER PROFILE
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def me(request):
@@ -99,10 +23,8 @@ def me(request):
     except Profile.DoesNotExist:
         return Response({"error": "Profile not found"}, status=status.HTTP_404_NOT_FOUND)
 
-    serializer = ProfileSerializer(profile)
-    return Response(serializer.data, status=status.HTTP_200_OK)
+    return Response(ProfileSerializer(profile).data, status=status.HTTP_200_OK)
 
-# DASHBOARD
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def hello_dashboard(request):
@@ -113,27 +35,20 @@ def hello_dashboard(request):
 
     employee = profile.employee
     if not employee:
-        return Response(
-            {"error": "Employee record not found for user"},
-            status=status.HTTP_404_NOT_FOUND,
-        )
+        return Response({"error": "Employee record not found"}, status=status.HTTP_404_NOT_FOUND)
 
-    name = employee.name or request.user.get_full_name() or request.user.username
-    is_on_probation = employee.is_on_probation()
     today = date.today()
+    is_on_probation = employee.is_on_probation()
 
-    # Leave year window based on probation end date
     leave_year_start, leave_year_end = get_leave_year_range(employee.probation_end_date, today)
 
-    # Previous leave year window
     prev_day = leave_year_start - timedelta(days=1)
     prev_start, prev_end = get_leave_year_range(employee.probation_end_date, prev_day)
 
-    # Carry forward only after probation ends
     vacation_carry = carry_forward_only(employee, prev_start, prev_end) if not is_on_probation else 0
 
-    approved_requests = _approved_requests_in_window(employee, leave_year_start, leave_year_end)
-    used_by_type = _group_used_by_type(approved_requests)
+    approved = approved_requests_in_window(employee, leave_year_start, leave_year_end)
+    used_by_type = group_used_by_type(approved)
 
     leave_balance = {}
     for leave_type, yearly_limit in LEAVE_LIMITS.items():
@@ -142,7 +57,6 @@ def hello_dashboard(request):
         total_allowed = yearly_limit
         carry_forward = 0
 
-        # Only Vacation gets carry forward
         if leave_type == "VACATION":
             carry_forward = vacation_carry
             total_allowed = yearly_limit + vacation_carry
@@ -153,46 +67,34 @@ def hello_dashboard(request):
             "carry_forward": carry_forward,
             "total": total_allowed,
             "used": used,
-            "remaining": max(total_allowed - used, 0),
+            "remaining": round(max(total_allowed - used, 0), 1),
         }
 
-    recent_requests = []
-    for req in LeaveRequest.objects.filter(employee=employee).order_by("-applied_at")[:5]:
-        entry = {
-            "id": req.id,
-            "type": "WFH" if req.leave_type == "WFH" else "LEAVE",
-            "start_date": req.start_date.isoformat(),
-            "end_date": req.end_date.isoformat(),
-            "status": req.status,
-        }
-        if req.leave_type != "WFH":
-            entry["leave_type"] = req.get_leave_type_display()
-        recent_requests.append(entry)
+    recent_requests = [serialize_history_item(req) for req in history_queryset(employee)[:4]]
 
     pending_requests = LeaveRequest.objects.filter(employee=employee, status="PENDING").count()
 
-    response_data = {
-        "message": "Dashboard data retrieved successfully",
-        "name": name,
-        "role": profile.role,
-        "joining_date": employee.joining_date.isoformat(),
-        "probation_end_date": employee.probation_end_date.isoformat(),
-        "is_on_probation": is_on_probation,
-        "pending_requests": pending_requests,
-        "leave_balance": leave_balance,
-        "recent_requests": recent_requests,
-    }
-
-    return Response(response_data, status=status.HTTP_200_OK)
-
-# LEAVE BALANCES
+    return Response(
+        {
+            "message": "Dashboard data retrieved successfully",
+            "name": employee.name or request.user.get_full_name() or request.user.username,
+            "role": profile.role,
+            "joining_date": employee.joining_date.isoformat(),
+            "probation_end_date": employee.probation_end_date.isoformat(),
+            "is_on_probation": is_on_probation,
+            "pending_requests": pending_requests,
+            "leave_balance": leave_balance,
+            "recent_requests": recent_requests,
+        },
+        status=status.HTTP_200_OK,
+    )
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def get_leave_balances(request):
     try:
         profile = Profile.objects.select_related("employee").get(user=request.user)
     except Profile.DoesNotExist:
-        return Response({"error": "Profile not found"}, status=status.HTTP_404_NOT_FOUND)
+        return Response([], status=status.HTTP_200_OK)
 
     employee = profile.employee
     if not employee:
@@ -208,16 +110,8 @@ def get_leave_balances(request):
 
     vacation_carry = carry_forward_only(employee, prev_start, prev_end) if not is_on_probation else 0
 
-    approved_requests = _approved_requests_in_window(employee, leave_year_start, leave_year_end)
-    used_by_type = _group_used_by_type(approved_requests)
-
-    leave_config = {
-        "VACATION": "Vacation",
-        "SICK": "Sick",
-        "MATERNITY": "Maternity",
-        "PATERNITY": "Paternity",
-        "BEREAVEMENT": "Bereavement",
-    }
+    approved = approved_requests_in_window(employee, leave_year_start, leave_year_end)
+    used_by_type = group_used_by_type(approved)
 
     balances = []
     for leave_type, yearly_limit in LEAVE_LIMITS.items():
@@ -232,88 +126,78 @@ def get_leave_balances(request):
 
         balances.append(
             {
-                "type": leave_config.get(leave_type, leave_type.capitalize()),
+                "type": leave_type.capitalize(),
                 "leave_year_start": leave_year_start.isoformat(),
                 "leave_year_end": (leave_year_end - timedelta(days=1)).isoformat(),
                 "carry_forward": carry_forward,
                 "used": used,
                 "total": total_allowed,
-                "remaining": max(total_allowed - used, 0),
+                "remaining": round(max(total_allowed - used, 0), 1),
             }
         )
 
     return Response(balances, status=status.HTTP_200_OK)
 
-# NOTIFICATIONS
+
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
-def get_notifications(request):
+def get_history(request):
     try:
         profile = Profile.objects.select_related("employee").get(user=request.user)
     except Profile.DoesNotExist:
-        return Response([], status=status.HTTP_200_OK)
+        return Response({"count": 0, "next": None, "previous": None, "results": []}, status=status.HTTP_200_OK)
 
     employee = profile.employee
     if not employee:
-        return Response([], status=status.HTTP_200_OK)
+        return Response({"count": 0, "next": None, "previous": None, "results": []}, status=status.HTTP_200_OK)
 
-    notifications = []
-    now = timezone.now()
+    # pagination
+    try:
+        page = int(request.GET.get("page", 1))
+        page_size = int(request.GET.get("page_size", 10))
+    except ValueError:
+        page, page_size = 1, 10
 
-    recent_requests = LeaveRequest.objects.filter(
-        employee=employee,
-        applied_at__gte=now - timedelta(days=30),
-    ).order_by("-applied_at")
+    page = max(page, 1)
+    page_size = min(max(page_size, 1), 50)
 
-    for req in recent_requests:
-        time_diff = now - req.applied_at
+    #  frontend filters
+    search = request.GET.get("search", "")
+    month = request.GET.get("month", "")
+    leave_type = request.GET.get("type", "")       
+    status_filter = request.GET.get("status", "")  
 
-        if time_diff.days == 0:
-            hours = time_diff.seconds // 3600
-            time_ago = f"{hours} hours ago" if hours > 0 else "Just now"
-        else:
-            time_ago = f"{time_diff.days} day{'s' if time_diff.days > 1 else ''} ago"
+    qs = history_queryset(employee)
 
-        date_range = (
-            req.start_date.strftime("%b %d")
-            if req.start_date == req.end_date
-            else f"{req.start_date.strftime('%b %d')}-{req.end_date.strftime('%d')}"
-        )
+    #  APPLY FILTERS HERE
+    qs = apply_history_filters(
+        qs,
+        search=search,
+        month=month,
+        leave_type=leave_type,
+        status_filter=status_filter,
+    )
 
-        if req.status == "APPROVED":
-            notifications.append(
-                {
-                    "id": req.id,
-                    "title": "Leave Approved",
-                    "message": f"Your {req.get_leave_type_display().lower()} request for {date_range} has been approved",
-                    "time": time_ago,
-                    "read": False,
-                }
-            )
-        elif req.status == "REJECTED":
-            notifications.append(
-                {
-                    "id": f"leave:{req.id}:rejected",
-                    "title": "Leave Rejected",
-                    "message": f"Your {req.get_leave_type_display().lower()} request for {date_range} was rejected",
-                    "time": time_ago,
-                    "read": False,
-                }
-            )
-        elif req.status == "PENDING":
-            notifications.append(
-                {
-                    "id": f"leave:{req.id}:pending",
-                    "title": f"{req.get_leave_type_display()} Request Pending",
-                    "message": f"Your {req.get_leave_type_display().lower()} request is pending for approval",
-                    "time": time_ago,
-                    "read": True,
-                }
-            )
+    total = qs.count()
 
-    return Response(notifications[:10], status=status.HTTP_200_OK)
+    start = (page - 1) * page_size
+    end = start + page_size
 
-# RECENT ACTIVITIES
+    results = [serialize_history_item(req) for req in qs[start:end]]
+
+    return Response(
+        {
+            "count": total,
+            "page_size": page_size,  #  your frontend uses this
+            "next": page + 1 if end < total else None,
+            "previous": page - 1 if page > 1 else None,
+            "results": results,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
+
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def get_recent_activities(request):
@@ -326,58 +210,10 @@ def get_recent_activities(request):
     if not employee:
         return Response([], status=status.HTTP_200_OK)
 
-    now = timezone.now()
-
-    recent_requests = (
-        LeaveRequest.objects.filter(
-            employee=employee,
-            applied_at__gte=now - timedelta(days=30),
-        )
-        .order_by("-applied_at")[:10]
-    )
-
-    activities = []
-    for req in recent_requests:
-        date_range = req.start_date.strftime("%b %d, %Y")
-        if req.start_date != req.end_date:
-            date_range += f" - {req.end_date.strftime('%b %d, %Y')}"
-
-        if req.status == "APPROVED":
-            title = "Leave Approved"
-        elif req.status == "REJECTED":
-            title = "Leave Rejected"
-        else:
-            title = f"{req.get_leave_type_display()} Request Submitted"
-
-        time_display = "Awaiting approval"
-        if req.status in ["APPROVED", "REJECTED"]:
-            time_diff = now - req.applied_at
-
-            if time_diff.days == 0:
-                hours = time_diff.seconds // 3600
-                if hours > 0:
-                    time_display = f"{hours} hour{'s' if hours > 1 else ''} ago"
-                else:
-                    minutes = time_diff.seconds // 60
-                    time_display = f"{minutes} minute{'s' if minutes > 1 else ''} ago"
-            else:
-                time_display = f"{time_diff.days} day{'s' if time_diff.days > 1 else ''} ago"
-
-        activities.append(
-            {
-                "id": f"activity:{req.id}:{req.status.lower()}",
-                "type": "request",
-                "title": title,
-                "description": f"{date_range} ({req.total_days()} days)",
-                "time": time_display,
-                "status": req.status,
-            }
-        )
-
-    return Response(activities[:8], status=status.HTTP_200_OK)
+    qs = history_queryset(employee)[:4]
+    return Response([serialize_history_item(req) for req in qs], status=status.HTTP_200_OK)
 
 
-# CALENDAR DAYS
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def get_calendar_days(request):
@@ -397,7 +233,6 @@ def get_calendar_days(request):
     month_start = date(year, month, 1)
     month_end = date(year, month, days_in_month)
 
-    # IMPORTANT: overlap with the month window (not only start_date month)
     month_leaves = LeaveRequest.objects.filter(
         employee=employee,
         status="APPROVED",
@@ -413,13 +248,66 @@ def get_calendar_days(request):
 
         for leave in month_leaves:
             if leave.start_date <= current_date <= leave.end_date:
-                events.append(
-                    {
-                        "day": day,
-                        "type": leave.leave_type.lower(),
-                    }
-                )
+                events.append({"day": day, "type": leave.leave_type.lower()})
 
         days.append({"day": day, "events": events})
 
     return Response(days, status=status.HTTP_200_OK)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def get_upcoming_leaves(request):
+    """
+    GET /api/user/upcoming-leaves/?limit=5
+    Returns upcoming leaves (PENDING + APPROVED) from today onwards.
+    """
+    try:
+        profile = Profile.objects.select_related("employee").get(user=request.user)
+    except Profile.DoesNotExist:
+        return Response([], status=status.HTTP_200_OK)
+
+    employee = profile.employee
+    if not employee:
+        return Response([], status=status.HTTP_200_OK)
+
+    today = timezone.localdate()
+
+    try:
+        limit = int(request.GET.get("limit", 5))
+    except ValueError:
+        limit = 5
+    limit = min(max(limit, 1), 20)
+
+    qs = (
+        LeaveRequest.objects.filter(
+            employee=employee,
+            start_date__gte=today,
+            status__in=["PENDING", "APPROVED"],
+        )
+        .order_by("start_date", "end_date", "-applied_at")[:limit]
+    )
+
+    results = []
+    for req in qs:
+        leave_name = req.get_leave_type_display()
+
+        # simple message for UI
+        if req.status == "APPROVED":
+            message = f"Upcoming: {leave_name} leave approved"
+        else:
+            message = f"Upcoming: {leave_name} leave pending approval"
+
+        results.append(
+            {
+                "id": str(req.id),
+                "days": float(req.total_days()),  # supports 0.5
+                "status": req.status,
+                "leave_type": leave_name,
+                "start_date": req.start_date.isoformat(),
+                "end_date": req.end_date.isoformat(),
+                "message": message,
+            }
+        )
+
+    return Response(results, status=status.HTTP_200_OK)

@@ -6,6 +6,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from user_app.models import Employee, Profile
+from form_app.models import LeaveRequest  # ✅ needed for dashboard cards
+
 from .serializers import AllUsersDetailSerializer, EmployeeDetailSerializer
 
 
@@ -13,13 +15,18 @@ def _require_admin(request):
     """
     Returns (profile, error_response). If user is admin -> (profile, None)
     """
-    try:
-        profile = request.user.profile
-    except Profile.DoesNotExist:
-        return None, Response({"error": "User profile not found"}, status=status.HTTP_403_FORBIDDEN)
+    profile = getattr(request.user, "profile", None)
+    if not profile:
+        return None, Response(
+            {"error": "User profile not found"},
+            status=status.HTTP_403_FORBIDDEN
+        )
 
     if profile.role != "ADMIN":
-        return profile, Response({"error": "Only admins can access this endpoint"}, status=status.HTTP_403_FORBIDDEN)
+        return profile, Response(
+            {"error": "Only admins can access this endpoint"},
+            status=status.HTTP_403_FORBIDDEN
+        )
 
     return profile, None
 
@@ -35,16 +42,7 @@ class AllUsersDetailView(APIView):
         if err:
             return err
 
-        # If Employee is OneToOne/ForeignKey from Employee -> User with related_name="employee"
-        users = User.objects.all().select_related("profile")
-
-        # select_related("employee") only works if relation name exists on User
-        # If it doesn't, it's safe to remove it.
-        try:
-            users = users.select_related("employee")
-        except Exception:
-            pass
-
+        users = User.objects.select_related("profile", "employee").all()
         serializer = AllUsersDetailSerializer(users, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -80,13 +78,7 @@ class EmployeesByRoleView(APIView):
         if err:
             return err
 
-        users = User.objects.filter(profile__role="EMPLOYEE").select_related("profile")
-
-        try:
-            users = users.select_related("employee")
-        except Exception:
-            pass
-
+        users = User.objects.filter(profile__role="EMPLOYEE").select_related("profile", "employee")
         serializer = AllUsersDetailSerializer(users, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -100,17 +92,53 @@ class UserDetailView(APIView):
             return err
 
         try:
-            user = User.objects.select_related("profile").get(id=user_id)
-            try:
-                user = User.objects.select_related("profile", "employee").get(id=user_id)
-            except Exception:
-                pass
-
-            serializer = AllUsersDetailSerializer(user)
-            return Response(serializer.data, status=status.HTTP_200_OK)
-
+            user = User.objects.select_related("profile", "employee").get(id=user_id)
         except User.DoesNotExist:
             return Response({"error": "User not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = AllUsersDetailSerializer(user)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class AdminDashboardSummaryView(APIView):
+    """
+     Cards for Admin Dashboard UI:
+    - team_members: total employees who have EMPLOYEE role
+    - pending_requests: total pending leave requests
+    - approved_today: total approved today
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        _, err = _require_admin(request)
+        if err:
+            return err
+
+        today = timezone.localdate()
+
+        # Team members = user profiles that are EMPLOYEE AND have Employee account
+        team_members = Profile.objects.filter(role="EMPLOYEE", user__employee__isnull=False).count()
+
+        pending_requests = LeaveRequest.objects.filter(status="PENDING").count()
+
+        #  if you have approved_at in model:
+        # approved_today = LeaveRequest.objects.filter(
+        #     status="APPROVED",
+        #     approved_at__date=today
+        # ).count()
+
+        # Fallback: counts leaves approved today using updated status today is not possible without approved_at,
+        # so we use applied_at__date for now (not perfect, but stable until approved_at is added)
+        approved_today = LeaveRequest.objects.filter(status="APPROVED", applied_at__date=today).count()
+
+        return Response(
+            {
+                "team_members": team_members,
+                "pending_requests": pending_requests,
+                "approved_today": approved_today,
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 class AdminDashboardStatsView(APIView):
