@@ -1,6 +1,5 @@
 from datetime import date, datetime, timedelta
 from calendar import monthrange
-from django.db.models import Q
 
 from form_app.constants import LEAVE_LIMITS
 from form_app.models import LeaveRequest
@@ -60,7 +59,6 @@ def carry_forward_only(employee, prev_start: date, prev_end: date) -> float:
     prev_remaining = max(yearly_vacation - prev_used, 0)
     carry = prev_remaining * 0.5
 
-    # Supports half-day values (0.5)
     return round(carry, 1)
 
 
@@ -78,14 +76,33 @@ def approved_requests_in_window(employee, start: date, end_exclusive: date):
         end_date__gte=start,
     )
 
-
-def group_used_by_type(approved_requests):
+def overlapping_days(req: LeaveRequest, window_start: date, window_end_exclusive: date) -> float:
     """
-    Groups total used days by leave_type
+    Count only the days of this leave that overlap the given window.
+    Assumes leaves are day-based (full days). If you support half-day sessions,
+    handle that inside total_days() or extend this function.
+    """
+    window_end_incl = window_end_exclusive - timedelta(days=1)
+
+    start = max(req.start_date, window_start)
+    end = min(req.end_date, window_end_incl)
+
+    if start > end:
+        return 0
+
+    # inclusive day count
+    return float((end - start).days + 1)
+
+
+def group_used_by_type(approved_requests, window_start: date, window_end_exclusive: date):
+    """
+    Groups used leave days by leave_type, counting only days overlapping the window.
     """
     used = {}
     for req in approved_requests:
-        used[req.leave_type] = used.get(req.leave_type, 0) + req.total_days()
+        used[req.leave_type] = used.get(req.leave_type, 0) + overlapping_days(
+            req, window_start, window_end_exclusive
+        )
     return used
 
 
@@ -175,11 +192,11 @@ def apply_history_filters(qs, search="", month="", leave_type="", status_filter=
         if start and end:
             qs = qs.filter(start_date__gte=start, start_date__lt=end)
         else:
-            # Fallback: month is numeric only ("1".."12") -> mixes years by nature
+         
             try:
                 qs = qs.filter(start_date__month=int(month))
             except ValueError:
-                # Ignore invalid month filter input and return unfiltered queryset
-                return qs
+                # Ignore invalid month filter input
+                pass
 
     return qs

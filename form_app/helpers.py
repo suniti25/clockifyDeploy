@@ -1,9 +1,7 @@
-# form_app/helpers.py
-
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import Optional, Tuple
+from typing import Optional
 
 from django.utils.timezone import localdate
 from rest_framework import serializers
@@ -78,6 +76,28 @@ def compute_leave_days_for_payload(*, employee, payload: dict) -> float:
     return temp.total_days()
 
 
+# overlap helper to avoid overcounting
+def overlapping_days(req: LeaveRequest, window_start, window_end_exclusive) -> float:
+    """
+    Count only the portion of the leave that overlaps the window.
+    Includes half-day support when the overlap is exactly one day.
+    """
+    overlap_start = max(req.start_date, window_start)
+    overlap_end = min(req.end_date, window_end_exclusive - timedelta(days=1))
+
+    if overlap_start > overlap_end:
+        return 0.0
+
+    days = (overlap_end - overlap_start).days + 1
+
+    # Half-day (only meaningful when overlap is a single day)
+    # Assumes session values like "FULL", "AM", "PM"
+    if getattr(req, "session", "FULL") != "FULL" and overlap_start == overlap_end:
+        return 0.5
+
+    return float(days)
+
+
 def compute_paid_status(
     *,
     employee,
@@ -91,7 +111,7 @@ def compute_paid_status(
     - probation => unpaid
     - leave year anchored to probation_end_date
     - carry forward only VACATION (carry_forward_only)
-    - count used PAID approved in same window
+    - count used PAID approved in same window (overlap-aware)
     """
     # probation => always unpaid
     if employee.is_on_probation():
@@ -101,8 +121,9 @@ def compute_paid_status(
     if leave_type not in LEAVE_LIMITS:
         return True
 
-    leave_year_start, leave_year_end_excl = get_leave_year_range(employee.probation_end_date, start_date)
-    leave_year_end_incl = leave_year_end_excl - timedelta(days=1)
+    leave_year_start, leave_year_end_excl = get_leave_year_range(
+        employee.probation_end_date, start_date
+    )
 
     vacation_carry = 0
     if leave_type == "VACATION":
@@ -115,17 +136,17 @@ def compute_paid_status(
         leave_type=leave_type,
         status="APPROVED",
         is_paid=True,
-        start_date__lte=leave_year_end_incl,
+        start_date__lt=leave_year_end_excl,
         end_date__gte=leave_year_start,
     )
 
     if instance_id:
         qs = qs.exclude(id=instance_id)
 
-    used = sum(lr.total_days() for lr in qs)
+    # overlap-aware used calculation
+    used = sum(overlapping_days(lr, leave_year_start, leave_year_end_excl) for lr in qs)
 
     total_allowed = LEAVE_LIMITS[leave_type] + vacation_carry
     remaining = max(total_allowed - used, 0)
 
-    # boolean (no partial paid support)
     return leave_days <= remaining

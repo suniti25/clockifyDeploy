@@ -49,7 +49,8 @@ def hello_dashboard(request):
     vacation_carry = carry_forward_only(employee, prev_start, prev_end) if not is_on_probation else 0
 
     approved = approved_requests_in_window(employee, leave_year_start, leave_year_end)
-    used_by_type = group_used_by_type(approved)
+    used_by_type = group_used_by_type(approved, leave_year_start, leave_year_end)
+
 
     leave_balance = {}
     for leave_type, yearly_limit in LEAVE_LIMITS.items():
@@ -112,7 +113,8 @@ def get_leave_balances(request):
     vacation_carry = carry_forward_only(employee, prev_start, prev_end) if not is_on_probation else 0
 
     approved = approved_requests_in_window(employee, leave_year_start, leave_year_end)
-    used_by_type = group_used_by_type(approved)
+    used_by_type = group_used_by_type(approved, leave_year_start, leave_year_end)
+
 
     balances = []
     for leave_type, yearly_limit in LEAVE_LIMITS.items():
