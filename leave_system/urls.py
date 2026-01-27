@@ -1,5 +1,5 @@
 """
-URL configuration for leave_management_system project.
+URL configuration for leave_system project.
 
 The `urlpatterns` list routes URLs to views. For more information please see:
     https://docs.djangoproject.com/en/6.0/topics/http/urls/
@@ -15,10 +15,16 @@ Including another URLconf
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
 from django.contrib import admin
-from django.urls import path,include
+from django.urls import path, include
+#from views import discord_app
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-    path('api/', include('api.urls')),
+    path('api/auth/', include('auth_app.urls')),
+    path('api/user/', include('user_app.urls')),
+    path('api/form/', include('form_app.urls')),
+    path('api/admin/', include('admin_app.urls')),
+    path('discord/', include('discord_app.urls')), 
     
 ]
+
