@@ -1,0 +1,7 @@
+LEAVE_LIMITS = {
+    'VACATION': 14,
+    'SICK': 12,
+    'MATERNITY': 60,
+    'PATERNITY': 10,
+    'BEREAVEMENT': 3,
+}
