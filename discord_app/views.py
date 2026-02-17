@@ -1,31 +1,42 @@
 import json
 import os
 import logging
+import secrets
+import threading
+
 from dotenv import load_dotenv
 from django.http import JsonResponse
 from django.views.decorators.http import require_http_methods
 from django.views.decorators.csrf import csrf_exempt
 from django.shortcuts import get_object_or_404
-from django.db import transaction
-
-from form_app.helpers import compute_paid_status
+from django.utils import timezone
 
 from nacl.signing import VerifyKey
 from nacl.exceptions import BadSignatureError
 
 from form_app.models import LeaveRequest
-from discord_app.services import (
-    send_rejection_email_to_employee,
-    update_discord_leave_message,
-)
+from form_app.services import decide_leave, notify_leave_decision
+
+from discord_app import services
 
 load_dotenv()
 logger = logging.getLogger(__name__)
 
 DISCORD_PUBLIC_KEY = os.getenv("DISCORD_PUBLIC_KEY", "")
+DISCORD_CRON_SECRET = os.getenv("DISCORD_CRON_SECRET", "")
+DISCORD_DEBUG = os.getenv("DISCORD_DEBUG", "").strip().lower() in ("1", "true", "yes", "on")
 
-# VERIFY DISCORD SIGNATURE
-def verify_discord_signature(request, body=None):
+
+def _dbg(msg: str, *args) -> None:
+    if DISCORD_DEBUG:
+        logger.debug(msg, *args)
+
+
+def _ephemeral(content: str, status=200):
+    return JsonResponse({"type": 4, "data": {"content": content, "flags": 64}}, status=status)
+
+
+def verify_discord_signature(request, body: bytes | None = None) -> bool:
     signature = request.headers.get("X-Signature-Ed25519")
     timestamp = request.headers.get("X-Signature-Timestamp")
 
@@ -44,15 +55,24 @@ def verify_discord_signature(request, body=None):
 @csrf_exempt
 @require_http_methods(["POST"])
 def discord_interactions(request):
-    raw_body = request.body
+    # Always verify signature before reading or parsing the body
+    raw_body = request.body  # Must be the first thing you do!
+    _dbg("Discord signature headers present=%s", bool(request.headers.get("X-Signature-Ed25519")))
+    _dbg("Discord raw body prefix=%r", raw_body[:100])
 
     if not verify_discord_signature(request, raw_body):
+        logger.warning("Discord interaction rejected: invalid signature")
         return JsonResponse({"error": "Invalid signature"}, status=401)
+
+    # Only now is it safe to parse the body
 
     try:
         data = json.loads(raw_body)
     except json.JSONDecodeError:
+        logger.warning("Discord interaction rejected: invalid JSON")
         return JsonResponse({"error": "Invalid JSON"}, status=400)
+
+    _dbg("Discord interaction type=%s custom_id=%s", data.get("type"), (data.get("data", {}) or {}).get("custom_id"))
 
     interaction_type = data.get("type")
 
@@ -62,32 +82,25 @@ def discord_interactions(request):
 
     # 3 = BUTTON CLICK
     if interaction_type == 3:
-        custom_id = data.get("data", {}).get("custom_id", "")
+        custom_id = (data.get("data", {}) or {}).get("custom_id", "") or ""
         parts = custom_id.split("_")
 
-        # expected: leave_approve_<id> OR leave_reject_<id>
         if len(parts) < 3 or parts[0] != "leave":
-            return JsonResponse(
-                {"type": 4, "data": {"content": "Invalid button action", "flags": 64}}
-            )
+            return _ephemeral("Invalid button action")
 
         action = parts[1]
         try:
             leave_id = int(parts[-1])
         except ValueError:
-            return JsonResponse(
-                {"type": 4, "data": {"content": "Invalid leave ID", "flags": 64}}
-            )
+            return _ephemeral("Invalid leave ID")
 
-        leave_request = get_object_or_404(LeaveRequest, id=leave_id)
+        leave_request = get_object_or_404(
+            LeaveRequest.objects.select_related("employee", "employee__user"),
+            id=leave_id,
+        )
 
         if leave_request.status != "PENDING":
-            return JsonResponse(
-                {
-                    "type": 4,
-                    "data": {"content": "This request is already processed.", "flags": 64},
-                }
-            )
+            return _ephemeral("This request is already processed.")
 
         if action == "approve":
             return JsonResponse(
@@ -130,7 +143,7 @@ def discord_interactions(request):
                                         "custom_id": "rejection_reason",
                                         "label": "Reason for Rejection",
                                         "style": 2,
-                                        "min_length": 10,
+                                        "min_length": 5,
                                         "required": True,
                                     }
                                 ],
@@ -140,120 +153,140 @@ def discord_interactions(request):
                 }
             )
 
-        return JsonResponse({"type": 4, "data": {"content": "Unknown action", "flags": 64}})
+        return _ephemeral("Unknown action")
 
-    #  MODAL SUBMISSION
+    # 5 = MODAL SUBMISSION
     if interaction_type == 5:
-        custom_id = data.get("data", {}).get("custom_id", "")
+        custom_id = (data.get("data", {}) or {}).get("custom_id", "") or ""
         parts = custom_id.split("_")
 
-        # expected: leave_approve_modal_<id> OR leave_reject_modal_<id>
         if len(parts) < 4 or parts[0] != "leave":
-            return JsonResponse(
-                {"type": 4, "data": {"content": "Invalid modal action", "flags": 64}}
-            )
+            return _ephemeral("Invalid modal action")
 
         try:
             leave_id = int(parts[-1])
         except ValueError:
-            return JsonResponse(
-                {"type": 4, "data": {"content": "Invalid leave ID", "flags": 64}}
-            )
+            return _ephemeral("Invalid leave ID")
 
-        leave_request = get_object_or_404(LeaveRequest, id=leave_id)
-
-        # Prevent double processing
-        if leave_request.status != "PENDING":
-            return JsonResponse(
-                {
-                    "type": 4,
-                    "data": {"content": "This request is already processed.", "flags": 64},
-                }
-            )
-
-        # APPROVE MODAL (UPDATED: recompute is_paid at approval time)
+        # APPROVE MODAL
         if parts[:3] == ["leave", "approve", "modal"]:
             try:
-                with transaction.atomic():
-                    # Lock row to avoid race conditions (double-approval)
-                    leave_request = (
-                        LeaveRequest.objects.select_for_update()
-                        .select_related("employee")
-                        .get(id=leave_request.id)
-                    )
-
-                    if leave_request.status != "PENDING":
-                        return JsonResponse(
-                            {
-                                "type": 4,
-                                "data": {"content": "This request is already processed.", "flags": 64},
-                            }
-                        )
-
-                    employee = leave_request.employee
-                    leave_days = leave_request.total_days()
-
-                    leave_request.is_paid = compute_paid_status(
-                        employee=employee,
-                        leave_type=leave_request.leave_type,
-                        leave_days=leave_days,
-                        start_date=leave_request.start_date,
-                        instance_id=leave_request.id,
-                    )
-
-                    leave_request.status = "APPROVED"
-                    leave_request.save(update_fields=["status", "is_paid"])
-            except Exception:
-                logger.exception("Failed to approve leave (recompute is_paid)")
-                return JsonResponse(
-                    {"type": 4, "data": {"content": "Failed to approve leave", "flags": 64}}
+                # Do the minimal DB update in the request/response cycle.
+                # Defer Discord updates / email / other side effects to avoid interaction timeouts.
+                lr = decide_leave(
+                    leave_id=leave_id,
+                    new_status="APPROVED",
+                    message=None,
+                    notify=False,
                 )
 
-            # Best-effort Discord update
-            try:
-                update_discord_leave_message(leave_request)
-            except Exception:
-                logger.exception("Failed to update Discord message after approval")
+                threading.Thread(
+                    target=notify_leave_decision,
+                    kwargs={"leave_id": lr.id},
+                    daemon=True,
+                ).start()
+            except ValueError as e:
+                logger.error(f"ValueError approving leave {leave_id}: {e}")
+                return _ephemeral(str(e))
+            except Exception as ex:
+                import traceback
+                tb = traceback.format_exc()
+                logger.error(f"Exception approving leave {leave_id}: {ex}\n{tb}")
+                return _ephemeral(f"Failed to approve leave: {ex}")
 
-            return JsonResponse(
-                {"type": 7, "data": {"content": "Leave approved", "components": []}}
-            )
+            return _ephemeral("Leave approved ✅")
 
         # REJECT MODAL
         if parts[:3] == ["leave", "reject", "modal"]:
-            components = data.get("data", {}).get("components", [])
+            components = (data.get("data", {}) or {}).get("components", []) or []
             rejection_reason = ""
 
             for row in components:
-                for c in row.get("components", []):
+                for c in (row.get("components", []) or []):
                     if c.get("custom_id") == "rejection_reason":
-                        rejection_reason = c.get("value", "").strip()
+                        rejection_reason = (c.get("value") or "").strip()
 
             if not rejection_reason:
-                return JsonResponse(
-                    {"type": 4, "data": {"content": "Rejection reason required", "flags": 64}}
+                return _ephemeral("Rejection reason required")
+
+            try:
+                lr = decide_leave(
+                    leave_id=leave_id,
+                    new_status="REJECTED",
+                    message=rejection_reason,
+                    notify=False,
                 )
 
-            leave_request.status = "REJECTED"
-            leave_request.rejection_reason = rejection_reason
-            leave_request.save(update_fields=["status", "rejection_reason"])
+                threading.Thread(
+                    target=notify_leave_decision,
+                    kwargs={"leave_id": lr.id},
+                    daemon=True,
+                ).start()
+            except ValueError as e:
+                return _ephemeral(str(e))
+            except Exception as ex:
+                import traceback
+                tb = traceback.format_exc()
+                logger.exception("Failed to reject leave %s", leave_id)
+                return _ephemeral("Failed to reject leave")
 
-            # Update Discord + send email notification
-            try:
-                update_discord_leave_message(leave_request)
-            except Exception:
-                logger.exception("Failed to update Discord message after rejection")
+            return _ephemeral("Leave rejected ❌")
 
-            send_rejection_email_to_employee(leave_request)
+        return _ephemeral("Unhandled modal action")
 
-            return JsonResponse(
-                {"type": 7, "data": {"content": "Leave rejected", "components": []}}
-            )
+    return _ephemeral("Unhandled interaction")
 
-        return JsonResponse(
-            {"type": 4, "data": {"content": "Unhandled modal action", "flags": 64}}
-        )
+# CRON AUTH HELPER
+
+def _cron_auth_ok(request) -> bool:
+    # Security note: prefer header-based token; fallback to query param for compatibility.
+    token = request.headers.get("X-Cron-Token") or request.GET.get("token")
+    return bool(DISCORD_CRON_SECRET) and bool(token) and secrets.compare_digest(token, DISCORD_CRON_SECRET)
+
+# CRON: EMPLOYEE CHANNEL (ON LEAVE TODAY)
+
+@require_http_methods(["GET"])
+def cron_daily_on_leave(request):
+    if not _cron_auth_ok(request):
+        return JsonResponse({"error": "Unauthorized"}, status=401)
+
+    today = timezone.localdate()
+
+    if today.weekday() in (5, 6):
+        return JsonResponse({"status": "skipped", "reason": "weekend", "date": str(today)})
+
+    eligible = services._active_today_qs(today).filter(notified_employee_at__isnull=True).count()
+    ok = services.send_employee_on_leave_today()
 
     return JsonResponse(
-        {"type": 4, "data": {"content": "Unhandled interaction", "flags": 64}}
+        {
+            "status": "sent" if ok else "nothing_to_send",
+            "date": str(today),
+            "eligible_count": eligible,
+            "employee_channel_id": services.EMPLOYEE_CHANNEL_ID,
+        }
+    )
+
+# CRON: ADMIN CHANNEL (APPROVED TODAY)
+
+@require_http_methods(["GET"])
+def cron_daily_approved(request):
+    if not _cron_auth_ok(request):
+        return JsonResponse({"error": "Unauthorized"}, status=401)
+
+    today = timezone.localdate()
+
+    if today.weekday() in (5, 6):
+        return JsonResponse({"status": "skipped", "reason": "weekend", "date": str(today)})
+
+    eligible = services._approved_today_qs(today).filter(notified_admin_at__isnull=True).count()
+    ok = services.send_admin_approved_today()
+
+    return JsonResponse(
+        {
+            "status": "sent" if ok else "nothing_to_send",
+            "date": str(today),
+            "eligible_count": eligible,
+            "admin_channel_id": services.ADMIN_CHANNEL_ID,
+        }
     )

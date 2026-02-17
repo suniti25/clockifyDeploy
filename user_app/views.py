@@ -1,160 +1,121 @@
-from datetime import date, timedelta
+from __future__ import annotations
+
 from calendar import monthrange
 from collections import defaultdict
+from datetime import date, timedelta
+from math import ceil
 
+from django.db.models import Count
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from form_app.constants import LEAVE_LIMITS
 from form_app.models import LeaveRequest
-from .models import Profile
+
+from .helpers import (
+    _aggregate_approved_usage,
+    _build_leave_year_context,
+    _get_profile_and_employee,
+    _iso,
+    _leave_balance_list,
+    _norm_status_expr,
+    _serialize_recent,
+    _serialize_upcoming,
+    apply_history_filters,
+    history_queryset,
+)
 from .serializers import ProfileSerializer
 
-from .helpers import (get_leave_year_range,carry_forward_only,approved_requests_in_window,group_used_by_type,history_queryset,
-serialize_history_item, apply_history_filters,)
 
+# Endpoints
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def me(request):
-    try:
-        profile = Profile.objects.select_related("employee").get(user=request.user)
-    except Profile.DoesNotExist:
-        return Response({"error": "Profile not found"}, status=status.HTTP_404_NOT_FOUND)
-
+    profile, _, err = _get_profile_and_employee(request)
+    if err:
+        return err
     return Response(ProfileSerializer(profile).data, status=status.HTTP_200_OK)
+
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def hello_dashboard(request):
-    try:
-        profile = Profile.objects.select_related("employee").get(user=request.user)
-    except Profile.DoesNotExist:
-        return Response({"error": "Profile not found"}, status=status.HTTP_404_NOT_FOUND)
+    profile, employee, err = _get_profile_and_employee(request)
+    if err:
+        return err
 
-    employee = profile.employee
-    if not employee:
-        return Response({"error": "Employee record not found"}, status=status.HTTP_404_NOT_FOUND)
+    # leave balances
+    ctx = _build_leave_year_context(employee)
+    paid_used_by_type, probation_leave_total, unpaid_leave_total = _aggregate_approved_usage(employee, ctx)
+    leave_balances = _leave_balance_list(ctx, paid_used_by_type, probation_leave_total, unpaid_leave_total)
 
+    # upcoming leaves (approved, start_date >= today)
     today = timezone.localdate()
-    is_on_probation = employee.is_on_probation()
+    upcoming_qs = (
+        LeaveRequest.objects.filter(
+            employee=employee,
+            status="APPROVED",
+            start_date__gte=today,
+        )
+        .order_by("start_date", "end_date", "id")
+        .only(
+            "id",
+            "leave_type",
+            "start_date",
+            "end_date",
+            "status",
+            "session",
+            "start_session",
+            "end_session",
+        )
+    )[:5]
+    upcoming_leaves = [_serialize_upcoming(req) for req in upcoming_qs]
 
-    leave_year_start, leave_year_end = get_leave_year_range(employee.probation_end_date, today)
-
-    prev_day = leave_year_start - timedelta(days=1)
-    prev_start, prev_end = get_leave_year_range(employee.probation_end_date, prev_day)
-
-    vacation_carry = carry_forward_only(employee, prev_start, prev_end) if not is_on_probation else 0
-
-    approved = approved_requests_in_window(employee, leave_year_start, leave_year_end)
-    used_by_type = group_used_by_type(approved, leave_year_start, leave_year_end)
-
-
-    leave_balance = {}
-    for leave_type, yearly_limit in LEAVE_LIMITS.items():
-        used = used_by_type.get(leave_type, 0)
-
-        total_allowed = yearly_limit
-        carry_forward = 0
-
-        if leave_type == "VACATION":
-            carry_forward = vacation_carry
-            total_allowed = yearly_limit + vacation_carry
-
-        leave_balance[leave_type.lower()] = {
-            "leave_year_start": leave_year_start.isoformat(),
-            "leave_year_end": (leave_year_end - timedelta(days=1)).isoformat(),
-            "carry_forward": carry_forward,
-            "total": total_allowed,
-            "used": used,
-            "remaining": round(max(total_allowed - used, 0), 1),
-        }
-
-    recent_requests = [serialize_history_item(req) for req in history_queryset(employee)[:4]]
-
-    pending_requests = LeaveRequest.objects.filter(employee=employee, status="PENDING").count()
+    # recent requests
+    recent_qs = history_queryset(employee)[:10]
+    recent_requests = [_serialize_recent(req) for req in recent_qs]
 
     return Response(
         {
             "message": "Dashboard data retrieved successfully",
             "name": employee.name or request.user.get_full_name() or request.user.username,
             "role": profile.role,
-            "joining_date": employee.joining_date.isoformat(),
-            "probation_end_date": employee.probation_end_date.isoformat(),
-            "is_on_probation": is_on_probation,
-            "pending_requests": pending_requests,
-            "leave_balance": leave_balance,
+            "joining_date": _iso(getattr(employee, "joining_date", None)),
+            "probation_end_date": _iso(getattr(employee, "probation_end_date", None)),
+            "is_on_probation": ctx.is_on_probation,
+            "leave-balances": leave_balances,
+            "upcoming-leaves": upcoming_leaves,
             "recent_requests": recent_requests,
         },
         status=status.HTTP_200_OK,
     )
+
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def get_leave_balances(request):
-    try:
-        profile = Profile.objects.select_related("employee").get(user=request.user)
-    except Profile.DoesNotExist:
-        return Response([], status=status.HTTP_200_OK)
 
-    employee = profile.employee
-    if not employee:
-        return Response([], status=status.HTTP_200_OK)
+    _, employee, err = _get_profile_and_employee(request)
+    if err:
+        return err
 
-    today = timezone.localdate()
-    is_on_probation = employee.is_on_probation()
-
-    leave_year_start, leave_year_end = get_leave_year_range(employee.probation_end_date, today)
-
-    prev_day = leave_year_start - timedelta(days=1)
-    prev_start, prev_end = get_leave_year_range(employee.probation_end_date, prev_day)
-
-    vacation_carry = carry_forward_only(employee, prev_start, prev_end) if not is_on_probation else 0
-
-    approved = approved_requests_in_window(employee, leave_year_start, leave_year_end)
-    used_by_type = group_used_by_type(approved, leave_year_start, leave_year_end)
-
-
-    balances = []
-    for leave_type, yearly_limit in LEAVE_LIMITS.items():
-        used = used_by_type.get(leave_type, 0)
-
-        total_allowed = yearly_limit
-        carry_forward = 0
-
-        if leave_type == "VACATION":
-            carry_forward = vacation_carry
-            total_allowed = yearly_limit + vacation_carry
-
-        balances.append(
-            {
-                "type": leave_type.capitalize(),
-                "leave_year_start": leave_year_start.isoformat(),
-                "leave_year_end": (leave_year_end - timedelta(days=1)).isoformat(),
-                "carry_forward": carry_forward,
-                "used": used,
-                "total": total_allowed,
-                "remaining": round(max(total_allowed - used, 0), 1),
-            }
-        )
-
-    return Response(balances, status=status.HTTP_200_OK)
+    ctx = _build_leave_year_context(employee)
+    paid_used_by_type, probation_leave_total, unpaid_leave_total = _aggregate_approved_usage(employee, ctx)
+    return Response(
+        _leave_balance_list(ctx, paid_used_by_type, probation_leave_total, unpaid_leave_total),
+        status=status.HTTP_200_OK,
+    )
 
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def get_history(request):
-    try:
-        profile = Profile.objects.select_related("employee").get(user=request.user)
-    except Profile.DoesNotExist:
-        return Response({"count": 0, "next": None, "previous": None, "results": []}, status=status.HTTP_200_OK)
 
-    employee = profile.employee
-    if not employee:
-        return Response({"count": 0, "next": None, "previous": None, "results": []}, status=status.HTTP_200_OK)
+    _, employee, err = _get_profile_and_employee(request)
+    if err:
+        return err
 
-    # pagination
     try:
         page = int(request.GET.get("page", 1))
         page_size = int(request.GET.get("page_size", 10))
@@ -164,77 +125,131 @@ def get_history(request):
     page = max(page, 1)
     page_size = min(max(page_size, 1), 50)
 
-    #  frontend filters
     search = request.GET.get("search", "")
     month = request.GET.get("month", "")
-    leave_type = request.GET.get("type", "")       
-    status_filter = request.GET.get("status", "")  
 
-    qs = history_queryset(employee)
+    # Prefer a real leave type if present.
+    leave_type = ""
+    type_vals = request.GET.getlist("type")
+    if type_vals:
+        allowed_types: set[str] = set()
+        try:
+            field = LeaveRequest._meta.get_field("leave_type")
+            allowed_types = {k for k, _ in (field.choices or [])}
+        except Exception:
+            allowed_types = {k for k, _ in getattr(LeaveRequest, "LEAVE_TYPE_CHOICES", [])}
+        for raw in type_vals:
+            cand = (raw or "").strip().upper()
+            if cand in allowed_types:
+                leave_type = cand
+                break
+        if not leave_type:
+            leave_type = request.GET.get("type", "")
 
-    #  APPLY FILTERS HERE
-    qs = apply_history_filters(
-        qs,
+    status_filter = request.GET.get("status", "")
+
+
+    # BASE
+    base_qs = history_queryset(employee)
+
+    # list/paging
+    filtered_qs = base_qs
+    filtered_qs = apply_history_filters(
+        filtered_qs,
         search=search,
         month=month,
         leave_type=leave_type,
         status_filter=status_filter,
     )
 
-    total = qs.count()
+    # enforce stable ordering BEFORE slicing
+    filtered_qs = filtered_qs.order_by("-applied_at", "-id")
+
+    base_total = base_qs.count()
+    filtered_total = filtered_qs.count()
+
+    total_pages = ceil(filtered_total / page_size) if filtered_total else 0
+
+    # counts by normalized status from BASE
+    normalized = base_qs.order_by().annotate(s=_norm_status_expr("status"))
+    counts_by_status = dict(
+        normalized.values("s").annotate(c=Count("id")).values_list("s", "c")
+    )
+
+    approved_count = int(counts_by_status.get("APPROVED", 0))
+    pending_count = int(counts_by_status.get("PENDING", 0))
+    rejected_count = int(counts_by_status.get("REJECTED", 0))
 
     start = (page - 1) * page_size
     end = start + page_size
+    page_qs = filtered_qs[start:end]
 
-    results = [serialize_history_item(req) for req in qs[start:end]]
+    results = [_serialize_recent(req) for req in page_qs]
 
     return Response(
         {
-            "count": total,
-            "page_size": page_size,  #  your frontend uses this
-            "next": page + 1 if end < total else None,
+            "count": base_total,                 
+            "filtered_count": filtered_total,    
+            "page_size": page_size,
+            "next": page + 1 if end < filtered_total else None,
             "previous": page - 1 if page > 1 else None,
+            "total_pages": total_pages,          
+            "current_page": page,
+            "approved_count": approved_count,
+            "pending_count": pending_count,
+            "rejected_count": rejected_count,
             "results": results,
         },
         status=status.HTTP_200_OK,
     )
 
 
-
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def get_recent_activities(request):
-    try:
-        profile = Profile.objects.select_related("employee").get(user=request.user)
-    except Profile.DoesNotExist:
-        return Response([], status=status.HTTP_200_OK)
 
-    employee = profile.employee
-    if not employee:
+    _, employee, err = _get_profile_and_employee(request)
+    if err:
         return Response([], status=status.HTTP_200_OK)
 
     qs = history_queryset(employee)[:4]
-    return Response([serialize_history_item(req) for req in qs], status=status.HTTP_200_OK)
+    return Response([_serialize_recent(req) for req in qs], status=status.HTTP_200_OK)
 
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def get_upcoming_leaves(request):
+
+    _, employee, err = _get_profile_and_employee(request)
+    if err:
+        return Response([], status=status.HTTP_200_OK)
+
+    try:
+        limit = int(request.GET.get("limit", 5))
+    except ValueError:
+        limit = 5
+    limit = min(max(limit, 1), 20)
+
+    today = timezone.localdate()
+
+    qs = (
+        LeaveRequest.objects.filter(
+            employee=employee,
+            status="APPROVED",
+            start_date__gte=today,  
+        )
+        .order_by("start_date", "end_date", "id")
+        .only("id", "leave_type", "start_date", "end_date", "status", "session")
+    )[:limit]
+
+    return Response([_serialize_upcoming(req) for req in qs], status=status.HTTP_200_OK)
 
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def get_calendar_days(request):
-    """
-    - Protected endpoint (IsAuthenticated)
-    - Uses year/month query params
-    - Only shows APPROVED leaves for the logged-in employee
-    - Returns calendar grid format:
-      [{day: null, events: []}, ..., {day: 1, events:[...]}, ...]
-    """
-    try:
-        profile = Profile.objects.select_related("employee").get(user=request.user)
-    except Profile.DoesNotExist:
-        return Response([], status=status.HTTP_200_OK)
-
-    employee = profile.employee
-    if not employee:
+    _, employee, err = _get_profile_and_employee(request)
+    if err:
         return Response([], status=status.HTTP_200_OK)
 
     today = timezone.localdate()
@@ -256,11 +271,14 @@ def get_calendar_days(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    first_weekday, days_in_month = monthrange(year, month)
+    # days in month 
+    _, days_in_month = monthrange(year, month)
+
     month_start = date(year, month, 1)
     month_end = date(year, month, days_in_month)
 
-    # Only fetch what we need
+    first_weekday = (month_start.weekday() + 1) % 7
+
     month_leaves = (
         LeaveRequest.objects.filter(
             employee=employee,
@@ -271,77 +289,19 @@ def get_calendar_days(request):
         .only("start_date", "end_date", "leave_type")
     )
 
-    # Precompute day -> events
-    event_map = defaultdict(list)
-
+    event_map: dict[int, list[dict]] = defaultdict(list)
     for leave in month_leaves:
         current = max(leave.start_date, month_start)
         last = min(leave.end_date, month_end)
-
         while current <= last:
-            event_map[current.day].append(
-                {
-                    "day": current.day,
-                    "type": leave.leave_type.lower(),
-                }
-            )
+            if current.weekday() < 5:
+                event_map[current.day].append(
+                    {"day": current.day, "type": (leave.leave_type or "").lower()}
+                )
             current += timedelta(days=1)
 
-    # Build calendar grid (leading blanks then 1..days_in_month)
     days = [{"day": None, "events": []} for _ in range(first_weekday)]
-
     for day_num in range(1, days_in_month + 1):
         days.append({"day": day_num, "events": event_map.get(day_num, [])})
 
     return Response(days, status=status.HTTP_200_OK)
-
-
-@api_view(["GET"])
-@permission_classes([IsAuthenticated])
-def get_upcoming_leaves(request):
-    """
-    Returns ONLY approved leaves that are upcoming (start_date >= today)
-    for the logged-in employee.
-    """
-    try:
-        profile = Profile.objects.select_related("employee").get(user=request.user)
-    except Profile.DoesNotExist:
-        return Response([], status=status.HTTP_200_OK)
-
-    employee = profile.employee
-    if not employee:
-        return Response([], status=status.HTTP_200_OK)
-    # limit
-    try:
-        limit = int(request.GET.get("limit", 5))
-    except ValueError:
-        limit = 5
-    limit = min(max(limit, 1), 20)
-
-    today = timezone.localdate()
-
-    qs = (
-        LeaveRequest.objects.filter(
-            employee=employee,
-            status="APPROVED",          
-            start_date__gte=today,      
-        )
-        .order_by("start_date")
-        .only("id", "leave_type", "start_date", "end_date", "status","session")
-    )[:limit]
-
-    results = []
-    for req in qs:
-        results.append(
-            {
-                "id": str(req.id),
-                "leave_type": req.get_leave_type_display(),
-                "start_date": req.start_date.isoformat(),
-                "end_date": req.end_date.isoformat(),
-                "days": req.total_days(),   
-                "status": req.status,       
-                "message": f"{req.get_leave_type_display()} leave upcoming",
-            }
-        )
-
-    return Response(results, status=status.HTTP_200_OK)

@@ -1,230 +1,413 @@
-from datetime import date, datetime, timedelta
-from calendar import monthrange
+from __future__ import annotations
 
-from form_app.constants import LEAVE_LIMITS
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
+from decimal import Decimal, ROUND_HALF_UP
+from typing import Optional
+
+from django.db.models import Q, Value, CharField, F
+from django.db.models.functions import Upper, Trim, Replace
+from django.utils import timezone
+from rest_framework import status
+from rest_framework.response import Response
+
+from form_app.policies import (
+    get_leave_limits,
+    get_carryover_percentage,
+    get_leave_year_range_for_employee,
+)
+from form_app.helpers import overlapping_days as form_overlapping_days, display_is_paid
 from form_app.models import LeaveRequest
+
+from .models import Profile
 
 # LEAVE YEAR HELPERS
 
+def get_leave_year_range(employee, today: date) -> tuple[date, date]:
+    return get_leave_year_range_for_employee(employee, on_date=today)
 
-def year_reset(year: int, month: int, day: int) -> date:
-    """
-    Safe date builder for leap years (Feb 29 -> Feb 28 fallback)
-    """
-    try:
-        return date(year, month, day)
-    except ValueError:
-        return date(year, month, 28)
-
-
-def get_leave_year_range(probation_end_date: date, today: date):
-    """
-    Leave year is anchored to probation_end_date (month/day)
-    Returns: (start_date, end_date_exclusive)
-    """
-    anchor_month = probation_end_date.month
-    anchor_day = probation_end_date.day
-
-    start_this_year = year_reset(today.year, anchor_month, anchor_day)
-
-    if today >= start_this_year:
-        start = start_this_year
-        end = year_reset(today.year + 1, anchor_month, anchor_day)
-    else:
-        start = year_reset(today.year - 1, anchor_month, anchor_day)
-        end = year_reset(today.year, anchor_month, anchor_day)
-
-    return start, end
-
-from decimal import Decimal, ROUND_HALF_UP
 
 def _round_to_half_day(value: float) -> float:
-    """
-    Quantize to nearest 0.5 day:supported by half-day leave systems.
-  
-    """
+
     d = Decimal(str(value))
     half = Decimal("0.5")
     return float((d / half).quantize(Decimal("1"), rounding=ROUND_HALF_UP) * half)
 
 
-def carry_forward_only(employee, prev_start: date, prev_end: date) -> float:
-    """
-    Carry forward is ONLY for VACATION leave.
-    Rule: 50% of unused VACATION leave.
-    Returned value is rounded to nearest 0.5 day (half-day granularity).
-    """
-    yearly_vacation = float(LEAVE_LIMITS.get("VACATION", 0))
+def carry_forward_only(employee, prev_start: date, prev_end_exclusive: date) -> float:
 
-    prev_used = sum(
-        float(lr.total_days())
-        for lr in LeaveRequest.objects.filter(
-            employee=employee,
-            leave_type="VACATION",
-            status="APPROVED",
-            is_paid=True,
-            start_date__lt=prev_end,
-            end_date__gte=prev_start,
-        )
+    if bool(getattr(employee, "reset_leave_balance", False)):
+        return 0.0
+
+    limits = get_leave_limits()
+    yearly_vacation = float(limits.get("VACATION", 0.0))
+
+    prev_used = 0.0
+    qs = LeaveRequest.objects.filter(
+        employee=employee,
+        leave_type="VACATION",
+        status="APPROVED",
+        is_paid=True,
+        start_date__lt=prev_end_exclusive,
+        end_date__gte=prev_start,
     )
 
+    for lr in qs:
+    
+        prev_used += float(lr.total_days())
+
     prev_remaining = max(yearly_vacation - prev_used, 0.0)
-    carry_raw = prev_remaining * 0.5
+    carry_pct = max(0, min(get_carryover_percentage(), 100))
+    carry_raw = prev_remaining * (float(carry_pct) / 100.0)
 
-    # quantize to supported step (0.5)
+    # round to nearest 0.5
     carry = _round_to_half_day(carry_raw)
-
-    # safety: never carry more than remaining * 0.5 due to rounding up
-    carry_cap = (int((carry_raw / 0.5)) * 0.5)  # floor to 0.5 steps
-    carry = min(carry, carry_cap)
+    carry_floor = (int(carry_raw / 0.5) * 0.5) 
+    carry = min(carry, carry_floor)
 
     return float(carry)
 
 
+# HISTORY HELPER
+def history_queryset(employee):
 
-def approved_requests_in_window(employee, start: date, end_exclusive: date):
-    """
-    Returns approved + paid leave overlapping the leave-year window
-    """
-    end_inclusive = end_exclusive - timedelta(days=1)
-
-    return LeaveRequest.objects.filter(
-        employee=employee,
-        status="APPROVED",
-        is_paid=True,
-        start_date__lte=end_inclusive,
-        end_date__gte=start,
+    return (
+        LeaveRequest.objects.filter(employee=employee)
+        .select_related("employee")
+        .order_by("-applied_at", "-id")
     )
 
-from datetime import date, timedelta
 
-def overlapping_days(req: LeaveRequest, window_start: date, window_end_exclusive: date) -> float:
-
-    window_end_incl = window_end_exclusive - timedelta(days=1)
-
-    overlap_start = max(req.start_date, window_start)
-    overlap_end = min(req.end_date, window_end_incl)
-
-    if overlap_start > overlap_end:
-        return 0.0
-
-    overlap_days = (overlap_end - overlap_start).days + 1  
-
-    # If the overlapped portion is exactly one day, respect the request's session/half-day
-    if overlap_days == 1:
-       
-        if req.start_date == req.end_date:
-            return float(req.total_days())
-        return 1.0
-
-    # Multi-day overlap 
-    return float(overlap_days)
+def _looks_like_sort_dir(x) -> bool:
+    if x is None:
+        return False
+    v = str(x).strip().lower()
+    return v in {"asc", "desc", "ascending", "descending"}
 
 
+def parse_month_param(month_str: str) -> tuple[Optional[date], Optional[date]]:
 
-def group_used_by_type(approved_requests, window_start: date, window_end_exclusive: date):
-    """
-    Groups used leave days by leave_type, counting only days overlapping the window.
-    """
-    used = {}
-    for req in approved_requests:
-        used[req.leave_type] = used.get(req.leave_type, 0) + overlapping_days(
-            req, window_start, window_end_exclusive
-        )
-    return used
-
-
-# HISTORY HELPERS
-
-
-def history_queryset(employee):
-    """
-    Base history query (newest → oldest)
-    """
-    return LeaveRequest.objects.filter(employee=employee).order_by("-applied_at")
-
-
-def serialize_history_item(req: LeaveRequest):
-    leave_name = req.get_leave_type_display()
-
-    if req.status == "APPROVED":
-        title = "Leave Approved"
-        message = f"Your {leave_name.lower()} leave was approved."
-    elif req.status == "REJECTED":
-        title = "Leave Rejected"
-        message = f"Your {leave_name.lower()} leave was rejected."
-    else:
-        title = "Leave Request Submitted"
-        message = f"Your {leave_name.lower()} leave request is pending approval."
-
-    return {
-        "id": str(req.id),
-        "leave_type": leave_name,
-        "status": req.status,
-        "start_date": req.start_date.isoformat(),
-        "end_date": req.end_date.isoformat(),
-        "days": float(req.total_days()),
-        "session": req.get_session_display(),
-        "is_paid": bool(req.is_paid),
-        "applied_at": req.applied_at.isoformat() if req.applied_at else None,
-        "title": title,
-        "message": message,
-        "reason": req.reason or "",
-        "rejection_reason": getattr(req, "rejection_reason", "") or "",
-    }
-
-
-def parse_month_param(month_str: str):
-    """
-    Supports:
-    - 2026-01
-    - January 2026
-    """
     if not month_str:
         return None, None
 
-    month_str = month_str.strip()
+    s = str(month_str).strip()
+    if not s:
+        return None, None
 
-    try:
-        dt = datetime.strptime(month_str, "%Y-%m")
-        start = date(dt.year, dt.month, 1)
-        end = date(dt.year, dt.month, monthrange(dt.year, dt.month)[1]) + timedelta(days=1)
-        return start, end
-    except ValueError:
-        pass
+    # Formats with year
+    for fmt in ("%Y-%m", "%B %Y", "%b %Y"):
+        try:
+            dt = datetime.strptime(s, fmt)
+            start = date(dt.year, dt.month, 1)
+            end_excl = date(dt.year + 1, 1, 1) if dt.month == 12 else date(dt.year, dt.month + 1, 1)
+            return start, end_excl
+        except ValueError:
+            continue
 
+    # Month only:assume current year 
     try:
-        dt = datetime.strptime(month_str, "%B %Y")
-        start = date(dt.year, dt.month, 1)
-        end = date(dt.year, dt.month, monthrange(dt.year, dt.month)[1]) + timedelta(days=1)
-        return start, end
+        m = int(s)
+        if 1 <= m <= 12:
+            today = datetime.now().date()
+            start = date(today.year, m, 1)
+            end_excl = date(today.year + 1, 1, 1) if m == 12 else date(today.year, m + 1, 1)
+            return start, end_excl
     except ValueError:
         return None, None
 
+    return None, None
 
-def apply_history_filters(qs, search="", month="", leave_type="", status_filter=""):
+
+def _norm_status_expr(field_name: str = "status"):
+
+    return Upper(
+        Trim(
+            Replace(
+                F(field_name),
+                Value("\u00A0"),  
+                Value(""),
+                output_field=CharField(),
+            )
+        )
+    )
+
+
+def apply_history_filters(qs, search: str = "", month: str = "", leave_type: str = "", status_filter: str = ""):
+
+    search = (search or "").strip()
+    month = (month or "").strip()
+    leave_type = (leave_type or "").strip()
+    status_filter = (status_filter or "").strip()
+
+    # Guard: some UIs reuse filter keys for sorting (e.g. type=asc)
+    if _looks_like_sort_dir(month):
+        month = ""
+    if _looks_like_sort_dir(leave_type):
+        leave_type = ""
+    if _looks_like_sort_dir(status_filter):
+        status_filter = ""
+
     if search:
-        qs = qs.filter(leave_type__icontains=search)
-
-    if status_filter:
-        qs = qs.filter(status=status_filter.upper())
+        qs = qs.filter(
+            Q(leave_type__icontains=search)
+            | Q(reason__icontains=search)
+            | Q(status__icontains=search)
+        )
 
     if leave_type:
-        qs = qs.filter(leave_type=leave_type.upper())
+        qs = qs.filter(leave_type__iexact=leave_type)
+
+    if status_filter:
+        wanted = status_filter.upper()
+        qs = qs.annotate(_status_norm=_norm_status_expr("status")).filter(_status_norm=wanted)
 
     if month:
-        month = str(month).strip()
-
-        # Best: month includes year, like "2026-01" or "January 2026"
-        start, end = parse_month_param(month)
-        if start and end:
-            qs = qs.filter(start_date__gte=start, start_date__lt=end)
-        else:
-         
-            try:
-                qs = qs.filter(start_date__month=int(month))
-            except ValueError:
-                # Ignore invalid month filter input
-                pass
+        start, end_excl = parse_month_param(month)
+        if start and end_excl:
+            #  overlap-based month filter
+            qs = qs.filter(start_date__lt=end_excl, end_date__gte=start)
 
     return qs
+
+# VIEW HELPERS 
+@dataclass(frozen=True)
+class LeaveYearContext:
+    today: date
+    leave_year_start: date
+    leave_year_end_excl: date
+    leave_year_end_incl: date
+    vacation_carry: float
+    is_on_probation: bool
+
+
+SESSION_LABEL = {
+    "FULL": "Full Day",
+    "FD": "Full Day",
+    "AM": "Morning",
+    "PM": "Afternoon",
+}
+
+
+def _session_label(session: str | None) -> str:
+    key = (session or "FULL").strip().upper()
+    return SESSION_LABEL.get(key, key)
+
+
+def _title_for_status(status_val: str | None) -> str:
+    s = (status_val or "").strip().upper()
+    if s == "APPROVED":
+        return "Leave Approved"
+    if s == "REJECTED":
+        return "Leave Rejected"
+    if s == "PENDING":
+        return "Leave Pending"
+    if s == "VOIDED":
+        return "Leave Voided"
+    return "Leave Update"
+
+
+def _message_for_status(leave_type_label: str, status_val: str | None) -> str:
+    s = (status_val or "").strip().upper()
+    lt = (leave_type_label or "leave").lower()
+    if s == "APPROVED":
+        return f"Your {lt} leave was approved."
+    if s == "REJECTED":
+        return f"Your {lt} leave was rejected."
+    if s == "PENDING":
+        return f"Your {lt} leave is pending."
+    if s == "VOIDED":
+        return f"Your {lt} leave was voided."
+    return f"Update for your {lt} leave."
+
+
+def _get_profile_and_employee(request):
+
+    try:
+        profile = Profile.objects.select_related("employee").get(user=request.user)
+    except Profile.DoesNotExist:
+        return None, None, Response({"error": "Profile not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    employee = profile.employee
+    if not employee:
+        return profile, None, Response({"error": "Employee record not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    return profile, employee, None
+
+
+def _iso(d: date | None) -> str | None:
+    return d.isoformat() if d else None
+
+
+def _build_leave_year_context(employee) -> LeaveYearContext:
+    today = timezone.localdate()
+
+    leave_year_start, leave_year_end_excl = get_leave_year_range(employee, today)
+    leave_year_end_incl = leave_year_end_excl - timedelta(days=1)
+
+    is_on_probation = employee.is_on_probation(on_date=today)
+
+    vacation_carry = 0.0
+    if not is_on_probation:
+        prev_day = leave_year_start - timedelta(days=1)
+        prev_start, prev_end_excl = get_leave_year_range(employee, prev_day)
+        vacation_carry = float(carry_forward_only(employee, prev_start, prev_end_excl))
+
+    return LeaveYearContext(
+        today=today,
+        leave_year_start=leave_year_start,
+        leave_year_end_excl=leave_year_end_excl,
+        leave_year_end_incl=leave_year_end_incl,
+        vacation_carry=vacation_carry,
+        is_on_probation=is_on_probation,
+    )
+
+
+def _approved_requests_in_year(employee, ctx: LeaveYearContext):
+    return LeaveRequest.objects.filter(
+        employee=employee,
+        status="APPROVED",
+        start_date__lt=ctx.leave_year_end_excl,
+        end_date__gte=ctx.leave_year_start,
+    )
+
+
+def _aggregate_approved_usage(employee, ctx: LeaveYearContext):
+    approved_qs = _approved_requests_in_year(employee, ctx).order_by("start_date", "end_date", "id")
+
+    paid_used_by_type: dict[str, float] = {}
+    probation_leave_total = 0.0
+    unpaid_leave_total = 0.0
+
+    limits = get_leave_limits()
+    total_allowed_by_type: dict[str, float] = {
+        lt: float(limit) for lt, limit in limits.items()
+    }
+    if "VACATION" in total_allowed_by_type:
+        total_allowed_by_type["VACATION"] = float(limits.get("VACATION", 0.0)) + float(ctx.vacation_carry)
+
+    for lr in approved_qs:
+        days_in_window = float(form_overlapping_days(lr, ctx.leave_year_start, ctx.leave_year_end_excl))
+        if days_in_window <= 0:
+            continue
+
+        lt = (lr.leave_type or "").strip().upper()
+
+        if lt == "WFH":
+            continue
+
+        in_probation = (
+            bool(getattr(employee, "joining_date", None))
+            and bool(getattr(employee, "probation_end_date", None))
+            and employee.joining_date <= lr.start_date <= employee.probation_end_date
+        )
+
+        if in_probation:
+            probation_leave_total += days_in_window
+            continue
+
+        if lt not in total_allowed_by_type:
+            unpaid_leave_total += days_in_window
+            continue
+
+        remaining = max(total_allowed_by_type[lt] - float(paid_used_by_type.get(lt, 0.0)), 0.0)
+        paid_portion = min(remaining, days_in_window)
+        unpaid_portion = max(days_in_window - paid_portion, 0.0)
+
+        if paid_portion > 0:
+            paid_used_by_type[lt] = float(paid_used_by_type.get(lt, 0.0) + paid_portion)
+        if unpaid_portion > 0:
+            unpaid_leave_total += unpaid_portion
+
+    return paid_used_by_type, probation_leave_total, unpaid_leave_total
+
+
+def _leave_balance_list(
+    ctx: LeaveYearContext,
+    paid_used_by_type: dict[str, float],
+    probation_leave_total: float,
+    unpaid_leave_total: float,
+):
+
+    balances: list[dict] = [
+        {
+            "type": "Probation Leave",
+            "leave_year_start": ctx.leave_year_start.isoformat(),
+            "leave_year_end": ctx.leave_year_end_incl.isoformat(),
+            "carry_forward": 0.0,
+            "total": 0.0,
+            "used": round(probation_leave_total, 1),
+            "remaining": 0.0,
+        },
+        {
+            "type": "Unpaid Leave",
+            "leave_year_start": ctx.leave_year_start.isoformat(),
+            "leave_year_end": ctx.leave_year_end_incl.isoformat(),
+            "carry_forward": 0.0,
+            "total": 0.0,
+            "used": round(unpaid_leave_total, 1),
+            "remaining": 0.0,
+        },
+    ]
+
+    limits = get_leave_limits()
+    for leave_type, yearly_limit in limits.items():
+        paid_used = float(paid_used_by_type.get(leave_type, 0.0))
+
+        carry_forward = 0.0
+        total_allowed = float(yearly_limit)
+
+        if leave_type == "VACATION":
+            carry_forward = float(ctx.vacation_carry)
+            total_allowed += carry_forward
+
+        remaining = max(total_allowed - paid_used, 0.0)
+
+        balances.append(
+            {
+                "type": leave_type.capitalize(),
+                "leave_year_start": ctx.leave_year_start.isoformat(),
+                "leave_year_end": ctx.leave_year_end_incl.isoformat(),
+                "carry_forward": round(carry_forward, 1),
+                "total": round(total_allowed, 1),
+                "used": round(paid_used, 1),
+                "remaining": round(remaining, 1),
+            }
+        )
+
+    return balances
+
+
+def _serialize_upcoming(req: LeaveRequest) -> dict:
+    label = req.get_leave_type_display() if hasattr(req, "get_leave_type_display") else (req.leave_type or "")
+    return {
+        "id": str(req.id),
+        "leave_type": label,
+        "start_date": req.start_date.isoformat() if req.start_date else None,
+        "end_date": req.end_date.isoformat() if req.end_date else None,
+        "days": float(req.total_days()) if hasattr(req, "total_days") else None,
+        "status": (req.status or "").strip().upper(),
+        "message": f"{label} leave upcoming",
+    }
+
+
+def _serialize_recent(req: LeaveRequest) -> dict:
+    leave_type_label = req.get_leave_type_display() if hasattr(req, "get_leave_type_display") else (req.leave_type or "")
+    applied_at = getattr(req, "applied_at", None)
+    reviewed_at = getattr(req, "reviewed_at", None) or getattr(req, "approved_at", None)
+
+    return {
+        "id": str(req.id),
+        "leave_type": leave_type_label,
+        "status": (req.status or "").strip().upper(),
+        "start_date": req.start_date.isoformat() if req.start_date else None,
+        "end_date": req.end_date.isoformat() if req.end_date else None,
+        "days": float(req.total_days()) if hasattr(req, "total_days") else None,
+        "session": _session_label(getattr(req, "session", None)),
+        "is_paid": display_is_paid(req.leave_type, getattr(req, "is_paid", None)),
+        "applied_at": applied_at.isoformat() if applied_at else None,
+        "reviewed_at": reviewed_at.isoformat() if reviewed_at else None,
+        "title": _title_for_status(getattr(req, "status", None)),
+        "message": _message_for_status(leave_type_label, getattr(req, "status", None)),
+        "reason": (getattr(req, "reason", "") or "").strip(),
+        "rejection_reason": (getattr(req, "rejection_reason", "") or "").strip(),
+    }

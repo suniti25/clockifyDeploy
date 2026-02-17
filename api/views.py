@@ -9,7 +9,6 @@ from .models import Employee, LeaveRequest, Profile
 from .serializers import EmployeeSerializer, LeaveRequestSerializer, LoginSerializer
 
 # Authentication View 
-
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def login_view(request):
@@ -50,10 +49,7 @@ class EmployeeViewSet(viewsets.ModelViewSet):
 
 
 class LeaveRequestViewSet(viewsets.ModelViewSet):
-    """
-    - Admins can see and manage all leave requests
-    - Employees can only see and create their own
-    """
+
     serializer_class = LeaveRequestSerializer
     permission_classes = [IsAuthenticated]
 
@@ -89,7 +85,6 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
         })
 
 # Funtions for custom endpoints
-
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def leave_list(request):

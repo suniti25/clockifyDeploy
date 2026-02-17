@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Employee, LeaveRequest, Profile
+from .models import Employee, LeaveRequest
 
 
 class LoginSerializer(serializers.Serializer):

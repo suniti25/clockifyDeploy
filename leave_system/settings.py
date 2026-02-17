@@ -30,7 +30,7 @@ def env_list(key: str, default=None, sep: str = ","):
 
 # DJANGO CORE
 
-SECRET_KEY = os.getenv("SECRET_KEY")
+SECRET_KEY = (os.getenv("SECRET_KEY") or "").strip()
 if not SECRET_KEY:
     raise RuntimeError("Missing required configuration: SECRET_KEY")
 
@@ -57,6 +57,7 @@ INSTALLED_APPS = [
     "form_app.apps.FormAppConfig",
     "admin_app",
     "discord_app",
+    "integrations",
 
     "rest_framework_simplejwt.token_blacklist",
 ]
@@ -95,26 +96,24 @@ TEMPLATES = [
 WSGI_APPLICATION = "leave_system.wsgi.application"
 
 # DATABASE 
-
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL is not set. Put it in .env or environment variables.")
 
 DATABASES = {
-    "default": dj_database_url.parse(DATABASE_URL, conn_max_age=60),
+    "default": dj_database_url.parse(DATABASE_URL, conn_max_age=600),
 }
 
 # PASSWORD VALIDATION
-
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
-    {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
+    {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator", "OPTIONS": {"min_length": 8}},
     {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
+    {"NAME": "core.validators.SymbolPasswordValidator"},
 ]
 
 # DRF
-
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
         "rest_framework_simplejwt.authentication.JWTAuthentication",
@@ -163,6 +162,7 @@ if DEBUG and not CORS_ALLOWED_ORIGINS:
         "http://localhost:5173",
         "http://127.0.0.1:3000",
         "http://127.0.0.1:5173",
+        "https://leave-management-system-frontend-gilt.vercel.app",
     ]
 
 
@@ -202,7 +202,8 @@ USE_TZ = True
 APPEND_SLASH = False
 
 # STATIC
-STATIC_URL = "static/"
+STATIC_URL = "/static/"
+STATIC_ROOT = BASE_DIR / "staticfiles"
 
 
 # EMAIL
@@ -215,9 +216,17 @@ EMAIL_USE_TLS = env_bool("EMAIL_USE_TLS", True)
 EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "")
 EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
 
+if EMAIL_HOST.strip() and (not EMAIL_HOST_USER.strip() or not EMAIL_HOST_PASSWORD.strip()):
+    raise RuntimeError(
+        "EMAIL_HOST is set but EMAIL_HOST_USER/EMAIL_HOST_PASSWORD is missing. "
+        "Provide full SMTP credentials or unset EMAIL_HOST to disable SMTP."
+    )
+
+# Frontend URL for password reset page
+FRONTEND_PASSWORD_RESET_URL = (
+    (os.getenv("FRONTEND_PASSWORD_RESET_URL") or os.getenv("FRONTEND_RESET_PASSWORD_URL") or "").strip())
 
 # DISCORD 
-
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")
 DISCORD_PUBLIC_KEY = os.getenv("DISCORD_PUBLIC_KEY", "")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
@@ -239,3 +248,9 @@ if not DEBUG:
     SECURE_HSTS_SECONDS = 31536000
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True
+
+# GOOGLE OAUTH
+GOOGLE_OAUTH_CLIENT_ID = os.getenv("GOOGLE_OAUTH_CLIENT_ID", "")
+GOOGLE_OAUTH_CLIENT_SECRET = os.getenv("GOOGLE_OAUTH_CLIENT_SECRET", "")
+GOOGLE_OAUTH_REDIRECT_URI = os.getenv("GOOGLE_OAUTH_REDIRECT_URI", "")
+GOOGLE_TOKEN_ENCRYPTION_KEY = os.getenv("GOOGLE_TOKEN_ENCRYPTION_KEY", "")

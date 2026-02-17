@@ -3,7 +3,7 @@ from .models import Profile, Employee
 
 
 class EmployeeSerializer(serializers.ModelSerializer):
-    # Keep API field as "name", but source it from Employee.name
+   
     name = serializers.CharField(source="name", read_only=True)
 
     class Meta:
@@ -16,11 +16,7 @@ class EmployeeSerializer(serializers.ModelSerializer):
         ]
 
     def to_representation(self, instance):
-        """
-        Ensure consistent name across the system:
-        1) Prefer Employee.name (source of truth, populated by signals)
-        2) Fallback to user full name / username if Employee.name is empty
-        """
+      
         data = super().to_representation(instance)
 
         if not data.get("name"):
