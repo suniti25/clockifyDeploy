@@ -1,0 +1,30 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: leave-backend
+    entrypoint: ./entrypoint.sh
+    command: >
+      gunicorn leave_management_system.wsgi:application
+      --bind 0.0.0.0:8000
+      --workers 3
+      --timeout 120
+      --access-logfile -
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./db.sqlite3:/app/db.sqlite3\
+      - /var/www/leave-management/staticfiles:/app/staticfiles    
+     # - ./staticfiles:/app/staticfiles    
+    env_file:
+      - .env
+    restart: unless-stopped
+
+    # ---- Healthcheck to ensure the app is running and responsive ----
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
