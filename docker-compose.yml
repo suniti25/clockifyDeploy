@@ -6,7 +6,7 @@ services:
     container_name: leave-backend
     entrypoint: ./entrypoint.sh
     command: >
-      gunicorn leave_management_system.wsgi:application
+      gunicorn leave_system.wsgi:application
       --bind 0.0.0.0:8000
       --workers 3
       --timeout 120
