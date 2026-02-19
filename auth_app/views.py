@@ -66,7 +66,7 @@ class LoginView(APIView):
             httponly=True,
             secure=True,
             samesite="None",
-            max_age=60 * 60 * 24 * 30,
+            max_age=60 * 60 * 24 * 30,  # 30 days
             path="/",
         )
 
