@@ -25,6 +25,9 @@ WORKDIR /app
 # Runtime lib only (for psycopg2-binary)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
+    python3-pip \
+    postgresql-client \
+    && pip install --no-cache-dir setuptools wheel \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /wheels /wheels
@@ -44,8 +47,6 @@ COPY entrypoint.sh .
 RUN chmod +x entrypoint.sh
 ENTRYPOINT ["./entrypoint.sh"]
 
-USER appuser
-
 EXPOSE 8000
 
-# CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "3", "--timeout", "120", "leave_system.wsgi:application"]
+# CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "3", "--timeout", "120", "leave_management_system.wsgi:application"]
