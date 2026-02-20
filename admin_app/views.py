@@ -49,7 +49,6 @@ logger = logging.getLogger(__name__)
 
 class AdminProjectsView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
-
     def get(self, request):
         from user_app.models import Project
 
@@ -77,7 +76,6 @@ class AdminProjectsView(APIView):
 
 class AdminProjectDeleteByBodyView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
-
     @transaction.atomic
     def post(self, request):
         project_id = request.data.get("project_id")
@@ -109,7 +107,6 @@ class AdminProjectDeleteByBodyView(APIView):
 
 class AdminLeaveKPIView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
-
     def get(self, request):
         try:
             year, month = parse_kpi_month_year_params(request.GET)
@@ -137,7 +134,6 @@ class AdminLeaveKPIView(APIView):
 
 class AllUsersDetailView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
-
     def get(self, request):
         leaves_qs = LeaveRequest.objects.order_by("-applied_at", "-id")
         users = (
@@ -151,7 +147,6 @@ class AllUsersDetailView(APIView):
 
 class UserDetailView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
-
     def get(self, request, user_id: int):
         try:
             user = User.objects.select_related("profile", "employee").get(id=user_id)
@@ -168,7 +163,6 @@ class UserDetailView(APIView):
 
 class AllEmployeesDetailView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
-
     def get(self, request):
         employees = (
             Employee.objects.select_related("user")
@@ -180,7 +174,6 @@ class AllEmployeesDetailView(APIView):
 
 class EmployeesByRoleView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
-
     def get(self, request):
         leaves_qs = LeaveRequest.objects.order_by("-applied_at", "-id")
         users = (
@@ -195,7 +188,6 @@ class EmployeesByRoleView(APIView):
 
 class AdminEmployeeDetailUpdateView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
-
     def get(self, request, employee_id: int):
         try:
             emp = Employee.objects.select_related("user").get(id=employee_id)
@@ -225,7 +217,6 @@ class AdminEmployeeDetailUpdateView(APIView):
 
 class AdminEmployeeUpdateByBodyView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
-
     @transaction.atomic
     def patch(self, request):
         ser = AdminEmployeeUpdateSerializer(data=request.data)
@@ -244,7 +235,6 @@ class AdminEmployeeUpdateByBodyView(APIView):
 
 class AdminDashboardStatsView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
-
     def get(self, request):
         today = timezone.localdate()
         return Response(
@@ -260,7 +250,6 @@ class AdminDashboardStatsView(APIView):
 
 class AdminAllRequestsView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
-
     def get(self, request):
         params = request.GET
 
@@ -312,7 +301,6 @@ class AdminAllRequestsView(APIView):
 
 class AdminPendingRequestsView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
-
     def get(self, request):
         params = request.GET
         base_qs = AdminRequestServices.unfiltered_queryset().order_by("-applied_at", "-id")
@@ -357,7 +345,6 @@ class AdminPendingRequestsView(APIView):
 
 class AdminUserCreateView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
-
     @transaction.atomic
     def post(self, request):
         ser = AdminUserCreateSerializer(data=request.data)
@@ -382,7 +369,6 @@ class AdminUserCreateView(APIView):
 
 class AdminUserUpdateView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
-
     @transaction.atomic
     def patch(self, request):
         ser = AdminUserUpdateSerializer(data=request.data)
@@ -439,7 +425,6 @@ class AdminUserUpdateView(APIView):
 
 class AdminUserDeleteByBodyView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
-
     @transaction.atomic
     def post(self, request):
         try:
@@ -507,7 +492,6 @@ class AdminUserDeleteByBodyView(APIView):
 
 class LeavePolicySettingsView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
-
     def get(self, request):
         settings_obj = get_leave_policy_settings()
         return Response(LeavePolicySettingsSerializer(settings_obj).data, status=status.HTTP_200_OK)
@@ -522,7 +506,6 @@ class LeavePolicySettingsView(APIView):
 
 class EmployeeRenewalScheduleView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
-
     def get(self, request):
         employees = (
             Employee.objects.select_related("user")
@@ -552,7 +535,6 @@ class EmployeeRenewalScheduleView(APIView):
 
 class ApproveLeaveByBodyView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
-
     @transaction.atomic
     def post(self, request):
         form_id = request.data.get("formID") or request.data.get("form_id")
@@ -586,7 +568,6 @@ class ApproveLeaveByBodyView(APIView):
 
 class RejectLeaveByBodyView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
-
     @transaction.atomic
     def post(self, request):
         form_id = request.data.get("formID") or request.data.get("form_id")

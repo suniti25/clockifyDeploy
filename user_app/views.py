@@ -286,17 +286,50 @@ def get_calendar_days(request):
             start_date__lte=month_end,
             end_date__gte=month_start,
         )
-        .only("start_date", "end_date", "leave_type")
+        .only("start_date", "end_date", "leave_type", "session", "start_session", "end_session")
     )
 
     event_map: dict[int, list[dict]] = defaultdict(list)
     for leave in month_leaves:
         current = max(leave.start_date, month_start)
         last = min(leave.end_date, month_end)
+
+        # Determine per-day session so half-days render correctly.
+        base_session = (getattr(leave, "session", "FULL") or "FULL").strip().upper()
+        start_sess = (getattr(leave, "start_session", base_session) or base_session).strip().upper()
+        end_sess = (getattr(leave, "end_session", base_session) or base_session).strip().upper()
+
         while current <= last:
             if current.weekday() < 5:
+
+                day_session = base_session
+                if leave.start_date == leave.end_date:
+                    day_session = base_session
+                else:
+                    if current == leave.start_date:
+                        day_session = start_sess
+                    elif current == leave.end_date:
+                        day_session = end_sess
+
+                is_half_day = day_session in {"AM", "PM"}
+                leave_type_label = (
+                    leave.get_leave_type_display()
+                    if hasattr(leave, "get_leave_type_display")
+                    else (leave.leave_type or "")
+                )
+                if is_half_day:
+                    title = f"Half day {leave_type_label} Leave ({day_session})"
+                else:
+                    title = f"{leave_type_label} Leave"
+
                 event_map[current.day].append(
-                    {"day": current.day, "type": (leave.leave_type or "").lower()}
+                    {
+                        "day": current.day,
+                        "type": (leave.leave_type or "").lower(),
+                        "title": title,
+                        "session": day_session,
+                        "is_half_day": bool(is_half_day),
+                    }
                 )
             current += timedelta(days=1)
 

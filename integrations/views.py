@@ -2,6 +2,7 @@ from django.conf import settings
 from django.contrib.auth.decorators import login_required
 from django.http import HttpResponseBadRequest, HttpResponseForbidden
 from django.shortcuts import redirect
+from django.urls import reverse
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 
@@ -45,6 +46,17 @@ def google_connect(request):
     if not settings.GOOGLE_OAUTH_REDIRECT_URI:
         return HttpResponseBadRequest("Missing GOOGLE_OAUTH_REDIRECT_URI in env")
 
+    # Guardrail: redirect_uri must be the callback URL (Google will redirect there with ?code=...)
+    # If this is misconfigured (e.g. points to /connect/), OAuth will loop or the callback will never get a code.
+    expected_callback = request.build_absolute_uri(reverse("integrations_google_callback"))
+    configured = settings.GOOGLE_OAUTH_REDIRECT_URI.strip()
+    if configured.rstrip("/") != expected_callback.rstrip("/"):
+        return HttpResponseBadRequest(
+            "Invalid GOOGLE_OAUTH_REDIRECT_URI. "
+            f"Expected: {expected_callback} ; Got: {configured}. "
+            "Update the Azure env var and Google Cloud Console Authorized redirect URI to match exactly."
+        )
+
     flow = Flow.from_client_config(
         _client_config(),
         scopes=SCOPES,
@@ -70,11 +82,23 @@ def google_callback(request):
     if not _is_admin_user(request.user):
         return HttpResponseForbidden("Admin access required.")
 
+    # If the user cancels consent or Google blocks the request,
+    # Google may redirect back with an error instead of a code.
+    oauth_error = request.GET.get("error")
+    if oauth_error:
+        oauth_error_description = request.GET.get("error_description") or ""
+        msg = f"Google OAuth error: {oauth_error}"
+        if oauth_error_description:
+            msg = f"{msg}. {oauth_error_description}"
+        return HttpResponseBadRequest(msg)
+
     code = request.GET.get("code")
     state = request.GET.get("state")
 
     if not code:
-        return HttpResponseBadRequest("Missing code from Google")
+        return HttpResponseBadRequest(
+            "Missing code from Google. Don’t open this callback URL directly; start from /api/admin/google/connect/ and complete the Google consent flow."
+        )
 
     expected_state = request.session.get("google_oauth_state")
     if expected_state and state != expected_state:
@@ -120,4 +144,4 @@ def google_callback(request):
     )
 
     request.session.pop("google_oauth_state", None)
-    return redirect("/admin/")  # back to Django admin dashboard
+    return redirect("/LMS-Admin/")  # back to Django admin dashboard

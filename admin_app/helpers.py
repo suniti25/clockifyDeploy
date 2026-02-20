@@ -4,11 +4,10 @@ from calendar import monthrange
 from datetime import date, timedelta
 from typing import Any, Dict, Optional
 
-from django.db.models import Q, Value, CharField, F
-from django.db.models.functions import Upper, Trim, Replace
+from django.db.models import Q
 from django.utils import timezone
 
-from form_app.helpers import overlapping_days, display_is_paid
+from form_app.helpers import overlapping_days, display_is_paid, _norm_status_expr
 from form_app.models import LeaveRequest
 from form_app.policies import get_leave_limits
 from user_app.helpers import get_leave_year_range, carry_forward_only
@@ -65,19 +64,6 @@ def _month_window(year: int, month: int) -> tuple[date, date]:
     last = monthrange(year, month)[1]
     return date(year, month, 1), date(year, month, last)
 
-
-def _norm_status_expr(field_name: str = "status"):
-
-    return Upper(
-        Trim(
-            Replace(
-                F(field_name),
-                Value("\u00A0"),  # non-breaking space
-                Value(""),
-                output_field=CharField(),
-            )
-        )
-    )
 
 # Filters 
 

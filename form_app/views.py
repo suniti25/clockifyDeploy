@@ -16,6 +16,8 @@ from form_app.helpers import (
     validate_leave_application_inputs,
     compute_leave_days_for_payload,
     compute_paid_status,
+    compute_paid_unpaid_split,
+    compute_paid_unpaid_split_for_request,
     display_is_paid,
 )
 from user_app.helpers import _get_profile_and_employee
@@ -90,6 +92,15 @@ def apply_leave(request):
         payload["applied_at"] = timezone.now()
 
     leave_days = compute_leave_days_for_payload(employee=employee, payload=payload)
+
+    paid_days, unpaid_days, remaining_paid_days = compute_paid_unpaid_split(
+        employee=employee,
+        leave_type=normalized_leave_type,
+        leave_days=leave_days,
+        start_date=start_date,
+        end_date=end_date,
+    )
+
     payload["is_paid"] = bool(
         compute_paid_status(
             employee=employee,
@@ -118,6 +129,9 @@ def apply_leave(request):
             "status": lr.status,
             "is_paid": display_is_paid(lr.leave_type, getattr(lr, "is_paid", None)),
             "days": float(lr.total_days()),
+            "paid_days": float(paid_days),
+            "unpaid_days": float(unpaid_days),
+            "remaining_paid_days_before_request": float(remaining_paid_days),
             "reapplied_from": getattr(lr, "reapplied_from_id", None),
         },
         status=status.HTTP_201_CREATED,
@@ -140,6 +154,7 @@ def get_requests(request):
     results = []
     for lr in qs[:200]:
         created_at = getattr(lr, "applied_at", None) or getattr(lr, "created_at", None)
+        paid_days, unpaid_days = compute_paid_unpaid_split_for_request(employee=employee, req=lr)
         results.append(
             {
                 "id": lr.id,
@@ -150,6 +165,8 @@ def get_requests(request):
                 "status": lr.status,
                 "is_paid": display_is_paid(lr.leave_type, getattr(lr, "is_paid", None)),
                 "days": float(lr.total_days()) if hasattr(lr, "total_days") else None,
+                "paid_days": float(paid_days),
+                "unpaid_days": float(unpaid_days),
                 "reason": getattr(lr, "reason", "") or "",
                 "submitted_at": created_at.isoformat() if created_at else None,
                 "discord_message_id": getattr(lr, "discord_message_id", None),

@@ -18,6 +18,12 @@ if load_dotenv:
 DISCORD_CRON_SECRET = os.getenv("DISCORD_CRON_SECRET", "")
 DISCORD_DEBUG = os.getenv("DISCORD_DEBUG", "")
 
+# Optional: proxy interactions for a specific channel to a local/ngrok URL.
+# This allows keeping Discord's Interactions Endpoint URL pointed at Azure while still
+# testing locally for a dev channel.
+DISCORD_INTERACTIONS_PROXY_URL = os.getenv("DISCORD_INTERACTIONS_PROXY_URL", "").strip()
+DISCORD_INTERACTIONS_PROXY_CHANNEL_ID = os.getenv("DISCORD_INTERACTIONS_PROXY_CHANNEL_ID", "").strip()
+
 def env_bool(key: str, default: bool = False) -> bool:
     return os.getenv(key, str(default)).strip().lower() in ("1", "true", "yes", "y", "on")
 
@@ -132,8 +138,6 @@ REST_FRAMEWORK = {
         "rest_framework.renderers.JSONRenderer",
     ),
 }
-
-
 
 # SIMPLE JWT 
 

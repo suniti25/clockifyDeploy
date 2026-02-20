@@ -5,8 +5,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
 
-from django.db.models import Q, Value, CharField, F
-from django.db.models.functions import Upper, Trim, Replace
+from django.db.models import Q
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.response import Response
@@ -16,7 +15,12 @@ from form_app.policies import (
     get_carryover_percentage,
     get_leave_year_range_for_employee,
 )
-from form_app.helpers import overlapping_days as form_overlapping_days, display_is_paid
+from form_app.helpers import (
+    overlapping_days as form_overlapping_days,
+    display_is_paid,
+    compute_paid_unpaid_split_for_request,
+    _norm_status_expr,
+)
 from form_app.models import LeaveRequest
 
 from .models import Profile
@@ -116,20 +120,6 @@ def parse_month_param(month_str: str) -> tuple[Optional[date], Optional[date]]:
         return None, None
 
     return None, None
-
-
-def _norm_status_expr(field_name: str = "status"):
-
-    return Upper(
-        Trim(
-            Replace(
-                F(field_name),
-                Value("\u00A0"),  
-                Value(""),
-                output_field=CharField(),
-            )
-        )
-    )
 
 
 def apply_history_filters(qs, search: str = "", month: str = "", leave_type: str = "", status_filter: str = ""):
@@ -379,12 +369,15 @@ def _leave_balance_list(
 
 def _serialize_upcoming(req: LeaveRequest) -> dict:
     label = req.get_leave_type_display() if hasattr(req, "get_leave_type_display") else (req.leave_type or "")
+    paid_days, unpaid_days = compute_paid_unpaid_split_for_request(employee=req.employee, req=req)
     return {
         "id": str(req.id),
         "leave_type": label,
         "start_date": req.start_date.isoformat() if req.start_date else None,
         "end_date": req.end_date.isoformat() if req.end_date else None,
         "days": float(req.total_days()) if hasattr(req, "total_days") else None,
+        "paid_days": float(paid_days),
+        "unpaid_days": float(unpaid_days),
         "status": (req.status or "").strip().upper(),
         "message": f"{label} leave upcoming",
     }
@@ -394,6 +387,7 @@ def _serialize_recent(req: LeaveRequest) -> dict:
     leave_type_label = req.get_leave_type_display() if hasattr(req, "get_leave_type_display") else (req.leave_type or "")
     applied_at = getattr(req, "applied_at", None)
     reviewed_at = getattr(req, "reviewed_at", None) or getattr(req, "approved_at", None)
+    paid_days, unpaid_days = compute_paid_unpaid_split_for_request(employee=req.employee, req=req)
 
     return {
         "id": str(req.id),
@@ -402,6 +396,8 @@ def _serialize_recent(req: LeaveRequest) -> dict:
         "start_date": req.start_date.isoformat() if req.start_date else None,
         "end_date": req.end_date.isoformat() if req.end_date else None,
         "days": float(req.total_days()) if hasattr(req, "total_days") else None,
+        "paid_days": float(paid_days),
+        "unpaid_days": float(unpaid_days),
         "session": _session_label(getattr(req, "session", None)),
         "is_paid": display_is_paid(req.leave_type, getattr(req, "is_paid", None)),
         "applied_at": applied_at.isoformat() if applied_at else None,

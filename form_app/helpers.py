@@ -19,6 +19,172 @@ from form_app.models import LeaveRequest
 MAX_FUTURE_DAYS = 365
 MAX_LEAVE_DAYS = 60
 
+def _is_probation_leave(*, employee, leave_start: date) -> bool:
+    probation_end = getattr(employee, "probation_end_date", None)
+    if not probation_end:
+        return False
+    try:
+        return bool(leave_start and leave_start <= probation_end)
+    except Exception:
+        return False
+
+
+def compute_paid_unpaid_split(
+    *,
+    employee,
+    leave_type: str,
+    leave_days: float,
+    start_date: date,
+    end_date: date,
+    instance_id: Optional[int] = None,
+) -> tuple[float, float, float]:
+    
+    """
+    It includes all approved leaves of the same type, 
+    whether they were paid or unpaid.
+    This ensures that even if a leave exceeded the limit
+    and was marked unpaid, it still correctly reduces 
+    the employee’s future paid leave balance.
+
+    """
+
+    leave_type = normalize_leave_type(leave_type)
+    leave_days = float(leave_days or 0.0)
+
+    if leave_type == "WFH" or leave_days <= 0.0:
+        return 0.0, 0.0, 0.0
+
+    limits = get_leave_limits()
+    if leave_type not in limits:
+        return 0.0, leave_days, 0.0
+
+    if _is_probation_leave(employee=employee, leave_start=start_date):
+        return 0.0, leave_days, 0.0
+
+    leave_year_start, leave_year_end_excl = get_leave_year_range_for_employee(employee, on_date=start_date)
+
+    vacation_carry = 0.0
+    if leave_type == "VACATION":
+        prev_day = leave_year_start - timedelta(days=1)
+        prev_start, prev_end_excl = get_leave_year_range_for_employee(employee, on_date=prev_day)
+        vacation_carry = float(carry_forward_only(employee, prev_start, prev_end_excl))
+
+    total_allowed = float(limits[leave_type]) + float(vacation_carry)
+
+    approved_qs = LeaveRequest.objects.filter(
+        employee=employee,
+        leave_type=leave_type,
+        status="APPROVED",
+        start_date__lt=leave_year_end_excl,
+        end_date__gte=leave_year_start,
+    )
+    
+    probation_end = getattr(employee, "probation_end_date", None)
+    if probation_end:
+        approved_qs = approved_qs.filter(start_date__gt=probation_end)
+
+    if instance_id:
+        approved_qs = approved_qs.exclude(id=instance_id)
+
+    used_days = sum(overlapping_days(lr, leave_year_start, leave_year_end_excl) for lr in approved_qs)
+    remaining = max(total_allowed - float(used_days), 0.0)
+
+    paid_days = min(float(leave_days), float(remaining))
+    unpaid_days = max(float(leave_days) - float(paid_days), 0.0)
+
+    # Keep consistent half-day rounding for UI.
+    paid_days = _round_to_half_day(paid_days)
+    unpaid_days = _round_to_half_day(unpaid_days)
+    remaining = _round_to_half_day(remaining)
+
+    # Guard rounding drift
+    if paid_days + unpaid_days > leave_days + 1e-9:
+        unpaid_days = max(_round_to_half_day(leave_days - paid_days), 0.0)
+
+    return float(paid_days), float(unpaid_days), float(remaining)
+
+
+def compute_paid_unpaid_split_for_request(*, employee, req: LeaveRequest) -> tuple[float, float]:
+   
+    """Compute paid/unpaid split for a persisted leave request.
+    """
+    leave_days = float(req.total_days()) if hasattr(req, "total_days") else 0.0
+    lt = normalize_leave_type(getattr(req, "leave_type", None))
+    if lt == "WFH" or leave_days <= 0.0:
+        return 0.0, 0.0
+
+    leave_year_start, leave_year_end_excl = get_leave_year_range_for_employee(
+        employee, on_date=req.start_date
+    )
+    limits = get_leave_limits()
+    if lt not in limits:
+        return 0.0, leave_days
+
+    if _is_probation_leave(employee=employee, leave_start=req.start_date):
+        return 0.0, leave_days
+
+    vacation_carry = 0.0
+    if lt == "VACATION":
+        prev_day = leave_year_start - timedelta(days=1)
+        prev_start, prev_end_excl = get_leave_year_range_for_employee(employee, on_date=prev_day)
+        vacation_carry = float(carry_forward_only(employee, prev_start, prev_end_excl))
+
+    total_allowed = float(limits[lt]) + float(vacation_carry)
+    remaining = float(total_allowed)
+
+    status_norm = (getattr(req, "status", "") or "").strip().upper()
+
+    # We simulate consumption in chronological order so an already-approved leave
+    # gets a stable split based on what came before it.
+    approved_qs = LeaveRequest.objects.filter(
+        employee=employee,
+        leave_type=lt,
+        status="APPROVED",
+        start_date__lt=leave_year_end_excl,
+        end_date__gte=leave_year_start,
+    ).order_by("start_date", "end_date", "id")
+
+    probation_end = getattr(employee, "probation_end_date", None)
+    if probation_end:
+        approved_qs = approved_qs.filter(start_date__gt=probation_end)
+
+    if status_norm != "APPROVED":
+        # Pending/rejected/voided: request hasn't consumed yet.
+        approved_qs = approved_qs.exclude(id=req.id)
+
+    paid_for_req = None
+    unpaid_for_req = None
+
+    for lr in approved_qs:
+        lr_days = float(overlapping_days(lr, leave_year_start, leave_year_end_excl))
+        if lr_days <= 0.0:
+            continue
+
+        paid_portion = min(remaining, lr_days)
+        unpaid_portion = max(lr_days - paid_portion, 0.0)
+        remaining = max(remaining - paid_portion, 0.0)
+
+        if lr.id == req.id:
+            paid_for_req = paid_portion
+            unpaid_for_req = unpaid_portion
+            break
+
+    if status_norm != "APPROVED":
+        # Preview for a not-yet-approved request.
+        paid_for_req = min(remaining, leave_days)
+        unpaid_for_req = max(leave_days - paid_for_req, 0.0)
+
+    paid_days = _round_to_half_day(float(paid_for_req or 0.0))
+    unpaid_days = _round_to_half_day(float(unpaid_for_req or 0.0))
+
+    # Ensure unpaid only appears if it actually exceeds.
+    if unpaid_days < 0.0:
+        unpaid_days = 0.0
+    if unpaid_days > 0.0 and paid_days + unpaid_days < leave_days - 1e-9:
+        unpaid_days = _round_to_half_day(max(leave_days - paid_days, 0.0))
+
+    return float(paid_days), float(unpaid_days)
+
 
 def _norm_status_expr(field_name: str = "status"):
     return Upper(
@@ -255,22 +421,15 @@ def compute_paid_status(
         prev_start, prev_end_excl = get_leave_year_range_for_employee(employee, on_date=prev_day)
         vacation_carry = float(carry_forward_only(employee, prev_start, prev_end_excl))
 
-    qs = LeaveRequest.objects.filter(
+    paid_days, unpaid_days, _remaining = compute_paid_unpaid_split(
         employee=employee,
         leave_type=leave_type,
-        status="APPROVED",
-        is_paid=True,
-        start_date__lt=leave_year_end_excl,
-        end_date__gte=leave_year_start,
+        leave_days=float(leave_days),
+        start_date=start_date,
+        end_date=end_date,
+        instance_id=instance_id,
     )
 
-    if instance_id:
-        qs = qs.exclude(id=instance_id)
-
-    used = sum(overlapping_days(lr, leave_year_start, leave_year_end_excl) for lr in qs)
-
-    total_allowed = float(limits[leave_type]) + float(vacation_carry)
-    remaining = max(total_allowed - float(used), 0.0)
-
-    return float(leave_days) <= float(remaining)
+    # "Paid" means: the entire request is within remaining balance.
+    return float(leave_days or 0.0) > 0.0 and unpaid_days <= 0.0
 

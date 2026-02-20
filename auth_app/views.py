@@ -36,7 +36,6 @@ class CsrfExemptSessionAuthentication(SessionAuthentication):
 
 class LoginView(APIView):
     permission_classes = [AllowAny]
-
     def post(self, request):
         serializer = LoginSerializer(data=request.data)
 
@@ -75,7 +74,6 @@ class LoginView(APIView):
 
 class SetRefreshCookieView(APIView):
     permission_classes = [AllowAny]
-
     def post(self, request):
         refresh_token = request.data.get("refresh")
 
@@ -107,7 +105,6 @@ class SetRefreshCookieView(APIView):
 
 class RegisterView(APIView):
     permission_classes = [AllowAny]
-
     def post(self, request):
         serializer = RegisterSerializer(data=request.data)
 
@@ -161,7 +158,6 @@ class UpdateEmailView(APIView):
 
 class RefreshTokenView(APIView):
     permission_classes = [AllowAny]
-
     def post(self, request):
         refresh_token = request.COOKIES.get("refresh_token")
 
@@ -185,7 +181,6 @@ class RefreshTokenView(APIView):
 
 class ForgotPasswordView(APIView):
     permission_classes = [AllowAny]
-
     def post(self, request):
         ser = ForgotPasswordSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
@@ -218,7 +213,7 @@ class ForgotPasswordView(APIView):
             expires_at=expires_at,
         )
 
-        base = (getattr(settings, "FRONTEND_RESET_PASSWORD_URL", "") or "").strip()
+        base = (getattr(settings, "FRONTEND_PASSWORD_RESET_URL", "") or "").strip()
         if base:
             from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 
