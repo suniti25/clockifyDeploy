@@ -1,11 +1,8 @@
-import os
 import logging
 from datetime import date
 
 import aiohttp
-import pytz
 from asgiref.sync import async_to_sync
-from dotenv import load_dotenv
 
 from django.conf import settings
 from django.core.mail import send_mail
@@ -15,39 +12,19 @@ from django.utils import timezone
 from form_app.models import LeaveRequest
 from form_app.helpers import display_is_paid
 
-load_dotenv()
 logger = logging.getLogger(__name__)
-
-NEPAL_TZ = pytz.timezone("Asia/Kathmandu")
 
 DISCORD_API_BASE = "https://discord.com/api/v10"
 HTTP_TIMEOUT = aiohttp.ClientTimeout(total=12)
 
-
-# ENV HELPERS
-def _get_int_env(name: str) -> int | None:
-    raw = os.getenv(name)
-    if not raw:
-        return None
-    try:
-        return int(raw)
-    except ValueError:
-        logger.warning("Invalid %s=%r", name, raw)
-        return None
-
-
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-ADMIN_CHANNEL_ID = _get_int_env("DISCORD_ADMIN_CHANNEL_ID")
-EMPLOYEE_CHANNEL_ID = _get_int_env("DISCORD_EMPLOYEE_CHANNEL_ID")
-
 # CORE DISCORD HTTP
 async def _discord_request(method: str, url: str, payload: dict | None):
-    if not DISCORD_TOKEN:
-        logger.warning("DISCORD_TOKEN not configured; skipping Discord request.")
+    if not settings.DISCORD_TOKEN:
+        logger.warning("settings.DISCORD_TOKEN not configured; skipping Discord request.")
         return None
 
     headers = {
-        "Authorization": f"Bot {DISCORD_TOKEN}",
+        "Authorization": f"Bot {settings.DISCORD_TOKEN}",
         "Content-Type": "application/json",
     }
 
@@ -154,7 +131,7 @@ def _fmt_mdY(d: date | None) -> str:
 def _fmt_nepal_datetime(dt) -> str:
     if not dt:
         return "—"
-    local_dt = timezone.localtime(dt, NEPAL_TZ)
+    local_dt = timezone.localtime(dt)
     return local_dt.strftime("%d %B %Y at %I:%M %p")
 
 
@@ -228,7 +205,7 @@ def send_leave_request_to_admin(leave: LeaveRequest):
     components = _approval_components(leave.id) if leave.status == "PENDING" else []
 
     msg_id = async_to_sync(send_discord_message)(
-        channel_id=ADMIN_CHANNEL_ID,
+        channel_id=settings.DISCORD_ADMIN_CHANNEL_ID,
         embed=embed,
         components=components,
     )
@@ -253,8 +230,8 @@ def update_admin_leave_message(leave: LeaveRequest):
             leave.id,
         )
         return False
-    if not ADMIN_CHANNEL_ID:
-        logger.warning("DISCORD_ADMIN_CHANNEL_ID not configured; skipping message update.")
+    if not settings.DISCORD_ADMIN_CHANNEL_ID:
+        logger.warning("DISCORD_settings.DISCORD_ADMIN_CHANNEL_ID not configured; skipping message update.")
         return False
 
     embed = _build_leave_embed(leave)
@@ -262,7 +239,7 @@ def update_admin_leave_message(leave: LeaveRequest):
 
     result = bool(
         async_to_sync(patch_discord_message)(
-            ADMIN_CHANNEL_ID,
+            settings.DISCORD_ADMIN_CHANNEL_ID,
             leave.discord_message_id,
             embeds=[embed],
             components=components,
@@ -307,8 +284,8 @@ def _approved_today_qs(target_date: date):
 
 # EMPLOYEE CHANNEL
 def send_approved_leave_to_employees(leave: LeaveRequest) -> bool:
-    if not ADMIN_CHANNEL_ID:
-        logger.warning("DISCORD_ADMIN_CHANNEL_ID not configured; skipping approval announcement.")
+    if not settings.DISCORD_ADMIN_CHANNEL_ID:
+        logger.warning("DISCORD_settings.DISCORD_ADMIN_CHANNEL_ID not configured; skipping approval announcement.")
         return False
 
     label = leave.get_leave_type_display()
@@ -322,7 +299,7 @@ def send_approved_leave_to_employees(leave: LeaveRequest) -> bool:
     )
 
     msg_id = async_to_sync(send_discord_message)(
-        channel_id=ADMIN_CHANNEL_ID,
+        channel_id=settings.DISCORD_ADMIN_CHANNEL_ID,
         content=content,
     )
 
@@ -330,8 +307,8 @@ def send_approved_leave_to_employees(leave: LeaveRequest) -> bool:
 
 
 def send_rejected_leave_to_employees(leave: LeaveRequest) -> bool:
-    if not ADMIN_CHANNEL_ID:
-        logger.warning("DISCORD_ADMIN_CHANNEL_ID not configured; skipping rejection announcement.")
+    if not settings.DISCORD_ADMIN_CHANNEL_ID:
+        logger.warning("DISCORD_settings.DISCORD_ADMIN_CHANNEL_ID not configured; skipping rejection announcement.")
         return False
 
     label = leave.get_leave_type_display()
@@ -345,7 +322,7 @@ def send_rejected_leave_to_employees(leave: LeaveRequest) -> bool:
     )
 
     msg_id = async_to_sync(send_discord_message)(
-        channel_id=ADMIN_CHANNEL_ID,
+        channel_id=settings.DISCORD_ADMIN_CHANNEL_ID,
         content=content,
     )
 
@@ -369,7 +346,7 @@ def send_employee_on_leave_today():
     content = "\n".join(lines)
 
     msg_id = async_to_sync(send_discord_message)(
-        channel_id=EMPLOYEE_CHANNEL_ID,
+        channel_id=settings.DISCORD_EMPLOYEE_CHANNEL_ID,
         content=content,
     )
 
@@ -396,7 +373,7 @@ def send_admin_approved_today():
     content = "\n".join(lines)
 
     msg_id = async_to_sync(send_discord_message)(
-        channel_id=ADMIN_CHANNEL_ID,
+        channel_id=settings.DISCORD_ADMIN_CHANNEL_ID,
         content=content,
     )
 

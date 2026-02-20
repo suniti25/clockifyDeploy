@@ -1,15 +1,14 @@
 import json
-import os
 import logging
 import secrets
 import threading
 
-from dotenv import load_dotenv
 from django.http import JsonResponse
 from django.views.decorators.http import require_http_methods
 from django.views.decorators.csrf import csrf_exempt
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from django.conf import settings
 
 from nacl.signing import VerifyKey
 from nacl.exceptions import BadSignatureError
@@ -19,12 +18,9 @@ from form_app.services import decide_leave, notify_leave_decision
 
 from discord_app import services
 
-load_dotenv()
 logger = logging.getLogger(__name__)
 
-DISCORD_PUBLIC_KEY = os.getenv("DISCORD_PUBLIC_KEY", "")
-DISCORD_CRON_SECRET = os.getenv("DISCORD_CRON_SECRET", "")
-DISCORD_DEBUG = os.getenv("DISCORD_DEBUG", "").strip().lower() in ("1", "true", "yes", "on")
+DISCORD_DEBUG = settings.DISCORD_DEBUG.strip().lower() in ("1", "true", "yes", "on")
 
 
 def _dbg(msg: str, *args) -> None:
@@ -40,11 +36,11 @@ def verify_discord_signature(request, body: bytes | None = None) -> bool:
     signature = request.headers.get("X-Signature-Ed25519")
     timestamp = request.headers.get("X-Signature-Timestamp")
 
-    if not signature or not timestamp or not DISCORD_PUBLIC_KEY:
+    if not signature or not timestamp or not settings.DISCORD_DEBUG:
         return False
 
     try:
-        verify_key = VerifyKey(bytes.fromhex(DISCORD_PUBLIC_KEY))
+        verify_key = VerifyKey(bytes.fromhex(settings.DISCORD_DEBUG))
         message_body = body if body is not None else request.body
         verify_key.verify(timestamp.encode() + message_body, bytes.fromhex(signature))
         return True
@@ -241,7 +237,7 @@ def discord_interactions(request):
 def _cron_auth_ok(request) -> bool:
     # Security note: prefer header-based token; fallback to query param for compatibility.
     token = request.headers.get("X-Cron-Token") or request.GET.get("token")
-    return bool(DISCORD_CRON_SECRET) and bool(token) and secrets.compare_digest(token, DISCORD_CRON_SECRET)
+    return bool(settings.DISCORD_CRON_SECRET) and bool(token) and secrets.compare_digest(token, settings.DISCORD_CRON_SECRET)
 
 # CRON: EMPLOYEE CHANNEL (ON LEAVE TODAY)
 

@@ -15,6 +15,8 @@ if load_dotenv:
     load_dotenv(BASE_DIR / ".env")
 
 
+DISCORD_CRON_SECRET = os.getenv("DISCORD_CRON_SECRET", "")
+DISCORD_DEBUG = os.getenv("DISCORD_DEBUG", "")
 
 def env_bool(key: str, default: bool = False) -> bool:
     return os.getenv(key, str(default)).strip().lower() in ("1", "true", "yes", "y", "on")
@@ -195,8 +197,9 @@ CORS_ALLOWED_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
 # INTERNATIONALIZATION
 
 LANGUAGE_CODE = "en-us"
-TIME_ZONE = "UTC"
+TIME_ZONE = "Asia/Kathmandu"
 USE_I18N = True
+USE_L10N = True
 USE_TZ = True
 
 APPEND_SLASH = False
