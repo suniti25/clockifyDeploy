@@ -107,9 +107,5 @@ media/
 *.db
 *.pid
 
-# Ignore Django Migrations in Development if you are working on team
-
-# Only for Development only
-**/migrations/**
-!**/migrations
-!**/migrations/__init__.py
+# Django migrations should be versioned (required for deploys)
+**/migrations/__pycache__/

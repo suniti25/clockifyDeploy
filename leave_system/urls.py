@@ -6,8 +6,12 @@ from drf_spectacular.views import (
     SpectacularRedocView,
 )
 
+from auth_app.views import LoginView
+
 urlpatterns = [
     path("LMS-Admin/", admin.site.urls),
+    # Compatibility alias: some frontends call /login/ directly
+    path("login/", LoginView.as_view(), name="login"),
     path("api/auth/", include("auth_app.urls")),
     path("api/user/", include("user_app.urls")),
     path("api/form/", include("form_app.urls")),
