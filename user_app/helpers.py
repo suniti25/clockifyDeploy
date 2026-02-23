@@ -11,7 +11,7 @@ from rest_framework import status
 from rest_framework.response import Response
 
 from form_app.policies import (
-    get_leave_limits,
+    get_leave_limits_for_employee,
     get_carryover_percentage,
     get_leave_year_range_for_employee,
 )
@@ -44,7 +44,7 @@ def carry_forward_only(employee, prev_start: date, prev_end_exclusive: date) -> 
     if bool(getattr(employee, "reset_leave_balance", False)):
         return 0.0
 
-    limits = get_leave_limits()
+    limits = get_leave_limits_for_employee(employee)
     yearly_vacation = float(limits.get("VACATION", 0.0))
 
     prev_used = 0.0
@@ -291,7 +291,7 @@ def _aggregate_approved_usage(employee, ctx: LeaveYearContext):
     probation_leave_total = 0.0
     unpaid_leave_total = 0.0
 
-    limits = get_leave_limits()
+    limits = get_leave_limits_for_employee(employee)
     total_allowed_by_type: dict[str, float] = {
         lt: float(limit) for lt, limit in limits.items()
     }
@@ -341,6 +341,7 @@ def _aggregate_approved_usage(employee, ctx: LeaveYearContext):
 
 
 def _leave_balance_list(
+    employee,
     ctx: LeaveYearContext,
     paid_used_by_type: dict[str, float],
     probation_leave_total: float,
@@ -368,7 +369,7 @@ def _leave_balance_list(
         },
     ]
 
-    limits = get_leave_limits()
+    limits = get_leave_limits_for_employee(employee)
     for leave_type, yearly_limit in limits.items():
         paid_used = float(paid_used_by_type.get(leave_type, 0.0))
 

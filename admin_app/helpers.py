@@ -9,7 +9,7 @@ from django.utils import timezone
 
 from form_app.helpers import overlapping_days, display_is_paid, _norm_status_expr
 from form_app.models import LeaveRequest
-from form_app.policies import get_leave_limits
+from form_app.policies import get_leave_limits_for_employee
 from user_app.helpers import get_leave_year_range, carry_forward_only
 
 
@@ -303,7 +303,7 @@ def remaining_leaves(
     carry = vacation_carry_forward(emp, year_start)
 
     remaining: dict[str, float] = {}
-    limits = get_leave_limits()
+    limits = get_leave_limits_for_employee(emp)
     for leave_type, yearly_limit in limits.items():
         leave_type_u = (leave_type or "").strip().upper()
         total_allowed = float(yearly_limit)
@@ -323,7 +323,7 @@ def remaining_balance_for_type(emp, leave_type: str) -> Optional[float]:
         return None
 
     leave_type_u = (leave_type or "").strip().upper()
-    limits = get_leave_limits()
+    limits = get_leave_limits_for_employee(emp)
     if leave_type_u not in limits:
         return None
 
