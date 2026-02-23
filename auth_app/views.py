@@ -57,7 +57,7 @@ class LoginView(APIView):
         user = ser.validated_data["user"]
         refresh = RefreshToken.for_user(user)
 
-        profile = Profile.objects.filter(user=user).select_related("employee").first()
+        profile = Profile.objects.filter(user=user).only("role", "employee_id").first()
 
         resp = Response(
             {
