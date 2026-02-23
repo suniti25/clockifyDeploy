@@ -1,0 +1,46 @@
+version: '3.9'
+
+services:
+  db:
+    image: postgres:15
+    container_name: leave-db
+    env_file:
+      - .env
+    volumes:
+      - leave-db-data:/var/lib/postgresql/data
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: leave-backend
+    entrypoint: ./entrypoint.sh
+    command: >
+      gunicorn leave_system.wsgi:application
+      --bind 0.0.0.0:8000
+      --workers 3
+      --timeout 120
+      --access-logfile -
+    ports:
+      - "8000:8000"
+    volumes:
+      # - /var/www/leave-management/staticfiles:/app/staticfiles
+      # - ./staticfiles:/app/staticfiles
+      - staticfiles-data:/app/staticfiles
+      - staticfiles-data:/var/www/leave-management/staticfiles
+
+    env_file:
+      - .env
+    restart: unless-stopped
+    depends_on:
+      - db
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  leave-db-data:
+  staticfiles-data:
