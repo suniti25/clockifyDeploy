@@ -10,7 +10,7 @@ jobs:
     uses: Avinto-IT/AvintoActionsPipeline/.github/workflows/reusable-workflow.yml@master
     with:
       docker_file: "docker-compose.yml" # Root of the repo
-      deployment-path: "/home/azureuser/Avinto/Avinto-leave-management/leave-management-system-backend" # Project path o VM
+      deployment-path: "/home/azureuser/Avinto/leave-management-system-backend" # Project path o VM
       branch-name: ${{github.ref_name}}
     secrets:
       vm_ip: ${{ secrets.LEAVE_MANAGEMENT_VM_IP }} 

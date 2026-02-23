@@ -24,8 +24,6 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      # - /var/www/leave-management/staticfiles:/app/staticfiles
-      # - ./staticfiles:/app/staticfiles
       - staticfiles-data:/app/staticfiles
       - staticfiles-data:/var/www/leave-management/staticfiles
 
