@@ -9,6 +9,7 @@ from googleapiclient.errors import HttpError
 
 logger = logging.getLogger(__name__)
 
+
 class Command(BaseCommand):
     help = "Delete orphaned Google Calendar events for LeaveRequests that no longer exist in the DB."
 
@@ -25,8 +26,11 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         from django.db import connection
+
         with connection.cursor() as cursor:
-            cursor.execute("SELECT google_event_id FROM form_app_leaverequest WHERE google_event_id != ''")
+            cursor.execute(
+                "SELECT google_event_id FROM form_app_leaverequest WHERE google_event_id != ''"
+            )
             raw_ids = [row[0] for row in cursor.fetchall()]
 
         existing_event_ids: set[str] = set()
@@ -53,17 +57,21 @@ class Command(BaseCommand):
         deleted_count = 0
         scanned_count = 0
         while True:
-            events = service.events().list(
-                calendarId=calendar_id,
-                pageToken=page_token,
-                timeMin=datetime(1970, 1, 1, tzinfo=timezone.utc).isoformat(),
-                showDeleted=False,
-                singleEvents=True,
-                maxResults=2500,
-            ).execute()
-            for event in events.get('items', []):
+            events = (
+                service.events()
+                .list(
+                    calendarId=calendar_id,
+                    pageToken=page_token,
+                    timeMin=datetime(1970, 1, 1, tzinfo=timezone.utc).isoformat(),
+                    showDeleted=False,
+                    singleEvents=True,
+                    maxResults=2500,
+                )
+                .execute()
+            )
+            for event in events.get("items", []):
                 scanned_count += 1
-                event_id = event.get('id')
+                event_id = event.get("id")
                 if not event_id:
                     continue
                 if not self._looks_like_leave_event(event):
@@ -71,12 +79,16 @@ class Command(BaseCommand):
 
                 if event_id not in existing_event_ids:
                     try:
-                        service.events().delete(calendarId=calendar_id, eventId=event_id).execute()
-                        logger.info(f"Deleted orphaned Google Calendar event {event_id}")
+                        service.events().delete(
+                            calendarId=calendar_id, eventId=event_id
+                        ).execute()
+                        logger.info(
+                            f"Deleted orphaned Google Calendar event {event_id}"
+                        )
                         deleted_count += 1
                     except HttpError as e:
                         logger.error(f"Failed to delete event {event_id}: {e}")
-            page_token = events.get('nextPageToken')
+            page_token = events.get("nextPageToken")
             if not page_token:
                 break
         self.stdout.write(

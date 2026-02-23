@@ -6,6 +6,8 @@ from django.db.models.signals import post_save, post_delete
 from django.dispatch import receiver
 
 from form_app.models import LeaveRequest
+
+
 @receiver(post_delete, sender=LeaveRequest)
 def delete_google_event_on_leave_delete(sender, instance, **kwargs):
     """
@@ -14,13 +16,16 @@ def delete_google_event_on_leave_delete(sender, instance, **kwargs):
     if not instance.google_event_id:
         return
 
-    event_ids = [eid.strip() for eid in str(instance.google_event_id).split(",") if eid.strip()]
+    event_ids = [
+        eid.strip() for eid in str(instance.google_event_id).split(",") if eid.strip()
+    ]
     if not event_ids:
         return
     try:
         from integrations.services import _get_calendar_credential, _build_credentials
         from googleapiclient.discovery import build
-        cred = _get_calendar_credential(getattr(instance.employee, 'user', None))
+
+        cred = _get_calendar_credential(getattr(instance.employee, "user", None))
         if not cred:
             return
         creds = _build_credentials(cred)
@@ -30,7 +35,9 @@ def delete_google_event_on_leave_delete(sender, instance, **kwargs):
 
         for event_id in event_ids:
             try:
-                service.events().delete(calendarId=cred.calendar_id, eventId=event_id).execute()
+                service.events().delete(
+                    calendarId=cred.calendar_id, eventId=event_id
+                ).execute()
                 logger.info(
                     "Deleted Google Calendar event %s for LeaveRequest %s",
                     event_id,
@@ -43,7 +50,10 @@ def delete_google_event_on_leave_delete(sender, instance, **kwargs):
                     instance.id,
                 )
     except Exception:
-        logger.exception(f"Failed to delete Google Calendar event for LeaveRequest {instance.id}")
+        logger.exception(
+            f"Failed to delete Google Calendar event for LeaveRequest {instance.id}"
+        )
+
 
 logger = logging.getLogger(__name__)
 
@@ -76,16 +86,17 @@ def notify_on_leave_approval(sender, instance, created, **kwargs):
                 "Discord service not available. Skipping leave decision notification."
             )
         except Exception:
-            logger.exception(
-                "Failed to send leave decision notification to Discord"
-            )
+            logger.exception("Failed to send leave decision notification to Discord")
 
     try:
-        transaction.on_commit(lambda: threading.Thread(target=_notify_discord, daemon=True).start())
+        transaction.on_commit(
+            lambda: threading.Thread(target=_notify_discord, daemon=True).start()
+        )
     except Exception:
         _notify_discord()
 
     if instance.status == "APPROVED":
+
         def _sync_google():
             try:
                 from integrations.services import sync_approved_leave_to_google
@@ -96,6 +107,8 @@ def notify_on_leave_approval(sender, instance, created, **kwargs):
 
         # Best-effort Google Calendar sync for approved leaves (defer off the request thread).
         try:
-            transaction.on_commit(lambda: threading.Thread(target=_sync_google, daemon=True).start())
+            transaction.on_commit(
+                lambda: threading.Thread(target=_sync_google, daemon=True).start()
+            )
         except Exception:
             _sync_google()

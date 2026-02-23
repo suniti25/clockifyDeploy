@@ -21,6 +21,9 @@ from form_app.policies import get_leave_policy_settings, get_next_renewal_date
 from form_app.services import decide_leave
 from user_app.models import Employee, Profile
 
+from drf_spectacular.utils import extend_schema, OpenApiParameter
+from drf_spectacular.types import OpenApiTypes
+
 from .helpers import _norm_status_expr, serialize_request_for_frontend
 from .permissions import IsAdminRole
 from .serializers import (
@@ -50,6 +53,18 @@ logger = logging.getLogger(__name__)
 class AdminProjectsView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
 
+    @extend_schema(
+        description="List projects (optional ?active=true to return only active).",
+        parameters=[
+            OpenApiParameter(
+                name="active",
+                type=OpenApiTypes.BOOL,
+                location=OpenApiParameter.QUERY,
+                required=False,
+            )
+        ],
+        responses={200: ProjectSerializer(many=True)},
+    )
     def get(self, request):
         from user_app.models import Project
 
@@ -58,8 +73,15 @@ class AdminProjectsView(APIView):
         if str(only_active).lower() in ("1", "true", "yes"):
             qs = qs.filter(is_active=True)
 
-        return Response(ProjectSerializer(qs, many=True).data, status=status.HTTP_200_OK)
+        return Response(
+            ProjectSerializer(qs, many=True).data, status=status.HTTP_200_OK
+        )
 
+    @extend_schema(
+        description="Create a project.",
+        request=ProjectCreateSerializer,
+        responses={201: OpenApiTypes.OBJECT, 400: OpenApiTypes.OBJECT},
+    )
     @transaction.atomic
     def post(self, request):
         ser = ProjectCreateSerializer(data=request.data)
@@ -78,20 +100,35 @@ class AdminProjectsView(APIView):
 class AdminProjectDeleteByBodyView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
 
+    @extend_schema(
+        description="Soft delete a project by body (project_id).",
+        request=OpenApiTypes.OBJECT,
+        responses={
+            200: OpenApiTypes.OBJECT,
+            400: OpenApiTypes.OBJECT,
+            404: OpenApiTypes.OBJECT,
+        },
+    )
     @transaction.atomic
     def post(self, request):
         project_id = request.data.get("project_id")
         if not project_id:
-            return Response({"error": "project_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"error": "project_id is required"}, status=status.HTTP_400_BAD_REQUEST
+            )
 
         from user_app.models import Project
 
         try:
             proj = Project.objects.select_for_update().get(id=int(project_id))
         except (ValueError, TypeError):
-            return Response({"error": "Invalid project_id"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"error": "Invalid project_id"}, status=status.HTTP_400_BAD_REQUEST
+            )
         except Project.DoesNotExist:
-            return Response({"error": "Project not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {"error": "Project not found"}, status=status.HTTP_404_NOT_FOUND
+            )
 
         proj.is_active = False
         proj.save(update_fields=["is_active"])
@@ -103,6 +140,7 @@ class AdminProjectDeleteByBodyView(APIView):
             status=status.HTTP_200_OK,
         )
 
+    @extend_schema(exclude=True)
     def delete(self, request):
         return self.post(request)
 
@@ -110,6 +148,28 @@ class AdminProjectDeleteByBodyView(APIView):
 class AdminLeaveKPIView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
 
+    @extend_schema(
+        description="Get combined leave KPIs (supports month/year params used by the service).",
+        parameters=[
+            OpenApiParameter(
+                name="month",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=False,
+            ),
+            OpenApiParameter(
+                name="year",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=False,
+            ),
+        ],
+        responses={
+            200: OpenApiTypes.OBJECT,
+            400: OpenApiTypes.OBJECT,
+            500: OpenApiTypes.OBJECT,
+        },
+    )
     def get(self, request):
         try:
             year, month = parse_kpi_month_year_params(request.GET)
@@ -117,8 +177,12 @@ class AdminLeaveKPIView(APIView):
                 {
                     "status": "success",
                     "data": {
-                        "sick_leave": sick_leave_kpi_for_current_month(year=year, month=month),
-                        "vacation_leave": vacation_leave_kpi_for_current_month(year=year, month=month),
+                        "sick_leave": sick_leave_kpi_for_current_month(
+                            year=year, month=month
+                        ),
+                        "vacation_leave": vacation_leave_kpi_for_current_month(
+                            year=year, month=month
+                        ),
                         "wfh": wfh_leave_kpi_for_current_month(year=year, month=month),
                         "leave_trends": leave_trends_for_year(year=year),
                     },
@@ -126,11 +190,18 @@ class AdminLeaveKPIView(APIView):
                 status=status.HTTP_200_OK,
             )
         except (TypeError, ValueError) as e:
-            return Response({"status": "error", "message": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"status": "error", "message": str(e)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         except Exception as e:
             logger.exception("Admin leave KPI combined failed")
             return Response(
-                {"status": "error", "message": "Failed to calculate leave KPIs", "detail": str(e)},
+                {
+                    "status": "error",
+                    "message": "Failed to calculate leave KPIs",
+                    "detail": str(e),
+                },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
@@ -138,29 +209,44 @@ class AdminLeaveKPIView(APIView):
 class AllUsersDetailView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
 
+    @extend_schema(
+        description="List all users with profile/employee and prefetched leave requests.",
+        responses={200: AllUsersDetailSerializer(many=True)},
+    )
     def get(self, request):
         leaves_qs = LeaveRequest.objects.order_by("-applied_at", "-id")
-        users = (
-            User.objects.select_related("profile", "employee")
-            .prefetch_related(
-                Prefetch("employee__leave_requests", queryset=leaves_qs, to_attr="prefetched_leaves")
+        users = User.objects.select_related("profile", "employee").prefetch_related(
+            Prefetch(
+                "employee__leave_requests",
+                queryset=leaves_qs,
+                to_attr="prefetched_leaves",
             )
         )
-        return Response(AllUsersDetailSerializer(users, many=True).data, status=status.HTTP_200_OK)
+        return Response(
+            AllUsersDetailSerializer(users, many=True).data, status=status.HTTP_200_OK
+        )
 
 
 class UserDetailView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
 
+    @extend_schema(
+        description="Get a single user (admin) by user_id.",
+        responses={200: AllUsersDetailSerializer, 404: OpenApiTypes.OBJECT},
+    )
     def get(self, request, user_id: int):
         try:
             user = User.objects.select_related("profile", "employee").get(id=user_id)
         except User.DoesNotExist:
-            return Response({"error": "User not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {"error": "User not found"}, status=status.HTTP_404_NOT_FOUND
+            )
 
         if getattr(user, "employee", None):
             user.employee.prefetched_leaves = list(
-                LeaveRequest.objects.filter(employee=user.employee).order_by("-applied_at", "-id")
+                LeaveRequest.objects.filter(employee=user.employee).order_by(
+                    "-applied_at", "-id"
+                )
             )
 
         return Response(AllUsersDetailSerializer(user).data, status=status.HTTP_200_OK)
@@ -169,41 +255,73 @@ class UserDetailView(APIView):
 class AllEmployeesDetailView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
 
+    @extend_schema(
+        description="List all employees (excluding staff/superuser).",
+        responses={200: EmployeeDetailSerializer(many=True)},
+    )
     def get(self, request):
         employees = (
             Employee.objects.select_related("user")
             .exclude(user__is_staff=True)
             .exclude(user__is_superuser=True)
         )
-        return Response(EmployeeDetailSerializer(employees, many=True).data, status=status.HTTP_200_OK)
+        return Response(
+            EmployeeDetailSerializer(employees, many=True).data,
+            status=status.HTTP_200_OK,
+        )
 
 
 class EmployeesByRoleView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
 
+    @extend_schema(
+        description="List employee users (profile role=EMPLOYEE) with prefetched leave requests.",
+        responses={200: AllUsersDetailSerializer(many=True)},
+    )
     def get(self, request):
         leaves_qs = LeaveRequest.objects.order_by("-applied_at", "-id")
         users = (
             User.objects.filter(profile__role="EMPLOYEE")
             .select_related("profile", "employee")
             .prefetch_related(
-                Prefetch("employee__leave_requests", queryset=leaves_qs, to_attr="prefetched_leaves")
+                Prefetch(
+                    "employee__leave_requests",
+                    queryset=leaves_qs,
+                    to_attr="prefetched_leaves",
+                )
             )
         )
-        return Response(AllUsersDetailSerializer(users, many=True).data, status=status.HTTP_200_OK)
+        return Response(
+            AllUsersDetailSerializer(users, many=True).data, status=status.HTTP_200_OK
+        )
 
 
 class AdminEmployeeDetailUpdateView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
 
+    @extend_schema(
+        description="Get employee detail by employee_id.",
+        responses={200: EmployeeDetailSerializer, 404: OpenApiTypes.OBJECT},
+    )
     def get(self, request, employee_id: int):
         try:
             emp = Employee.objects.select_related("user").get(id=employee_id)
         except Employee.DoesNotExist:
-            return Response({"error": "Employee not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {"error": "Employee not found"}, status=status.HTTP_404_NOT_FOUND
+            )
 
         return Response(EmployeeDetailSerializer(emp).data, status=status.HTTP_200_OK)
 
+    @extend_schema(
+        description="Update employee by employee_id (PATCH).",
+        request=AdminEmployeeUpdateSerializer,
+        responses={
+            200: OpenApiTypes.OBJECT,
+            400: OpenApiTypes.OBJECT,
+            404: OpenApiTypes.OBJECT,
+        },
+    )
     @transaction.atomic
     def patch(self, request, employee_id: int):
         payload = dict(request.data or {})
@@ -226,6 +344,11 @@ class AdminEmployeeDetailUpdateView(APIView):
 class AdminEmployeeUpdateByBodyView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
 
+    @extend_schema(
+        description="Update employee by body (PATCH).",
+        request=AdminEmployeeUpdateSerializer,
+        responses={200: OpenApiTypes.OBJECT, 400: OpenApiTypes.OBJECT},
+    )
     @transaction.atomic
     def patch(self, request):
         ser = AdminEmployeeUpdateSerializer(data=request.data)
@@ -245,6 +368,10 @@ class AdminEmployeeUpdateByBodyView(APIView):
 class AdminDashboardStatsView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
 
+    @extend_schema(
+        description="Admin dashboard stats (total employees, users on probation).",
+        responses={200: OpenApiTypes.OBJECT},
+    )
     def get(self, request):
         today = timezone.localdate()
         return Response(
@@ -261,6 +388,42 @@ class AdminDashboardStatsView(APIView):
 class AdminAllRequestsView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
 
+    @extend_schema(
+        description="List all leave requests for admin with paging and filters.",
+        parameters=[
+            OpenApiParameter(
+                name="page",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=False,
+            ),
+            OpenApiParameter(
+                name="page_size",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=False,
+            ),
+            OpenApiParameter(
+                name="pageSize",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=False,
+            ),
+            OpenApiParameter(
+                name="per_page",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=False,
+            ),
+            OpenApiParameter(
+                name="limit",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=False,
+            ),
+        ],
+        responses={200: OpenApiTypes.OBJECT},
+    )
     def get(self, request):
         params = request.GET
 
@@ -275,8 +438,12 @@ class AdminAllRequestsView(APIView):
                     return default
             return default
 
-        page = _first_present_int(("page", "current_page", "currentPage", "pageNumber"), 1)
-        page_size = _first_present_int(("page_size", "pageSize", "per_page", "perPage", "limit"), 10)
+        page = _first_present_int(
+            ("page", "current_page", "currentPage", "pageNumber"), 1
+        )
+        page_size = _first_present_int(
+            ("page_size", "pageSize", "per_page", "perPage", "limit"), 10
+        )
 
         page = max(page, 1)
         page_size = min(max(page_size, 1), 50)
@@ -313,21 +480,31 @@ class AdminAllRequestsView(APIView):
 class AdminPendingRequestsView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
 
+    @extend_schema(
+        description="Admin pending requests summary + recent requests + top leave takers.",
+        responses={200: OpenApiTypes.OBJECT},
+    )
     def get(self, request):
         params = request.GET
-        base_qs = AdminRequestServices.unfiltered_queryset().order_by("-applied_at", "-id")
+        base_qs = AdminRequestServices.unfiltered_queryset().order_by(
+            "-applied_at", "-id"
+        )
 
         recent_qs = base_qs[:7]
         recent_requests = [serialize_request_for_frontend(lr) for lr in recent_qs]
 
-        pending_qs = base_qs.annotate(_s=_norm_status_expr("status")).filter(_s=LeaveRequest.STATUS_PENDING)
+        pending_qs = base_qs.annotate(_s=_norm_status_expr("status")).filter(
+            _s=LeaveRequest.STATUS_PENDING
+        )
 
         pending_total = pending_qs.count()
         pending_requests = [serialize_request_for_frontend(lr) for lr in pending_qs]
 
         today = timezone.localdate()
         summary = {
-            "team_members": Profile.objects.filter(role="EMPLOYEE", user__employee__isnull=False).count(),
+            "team_members": Profile.objects.filter(
+                role="EMPLOYEE", user__employee__isnull=False
+            ).count(),
             "pending_requests": (
                 LeaveRequest.objects.annotate(_s=_norm_status_expr("status"))
                 .filter(_s=LeaveRequest.STATUS_PENDING)
@@ -358,6 +535,11 @@ class AdminPendingRequestsView(APIView):
 class AdminUserCreateView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
 
+    @extend_schema(
+        description="Create a user (admin).",
+        request=AdminUserCreateSerializer,
+        responses={201: OpenApiTypes.OBJECT, 400: OpenApiTypes.OBJECT},
+    )
     @transaction.atomic
     def post(self, request):
         ser = AdminUserCreateSerializer(data=request.data)
@@ -383,6 +565,15 @@ class AdminUserCreateView(APIView):
 class AdminUserUpdateView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
 
+    @extend_schema(
+        description="Update a user (admin) by body (PATCH).",
+        request=AdminUserUpdateSerializer,
+        responses={
+            200: OpenApiTypes.OBJECT,
+            400: OpenApiTypes.OBJECT,
+            404: OpenApiTypes.OBJECT,
+        },
+    )
     @transaction.atomic
     def patch(self, request):
         ser = AdminUserUpdateSerializer(data=request.data)
@@ -396,7 +587,9 @@ class AdminUserUpdateView(APIView):
             try:
                 user = User.objects.select_related("employee").get(id=user_id)
             except User.DoesNotExist:
-                return Response({"error": "User not found"}, status=status.HTTP_404_NOT_FOUND)
+                return Response(
+                    {"error": "User not found"}, status=status.HTTP_404_NOT_FOUND
+                )
 
             data = ser.validated_data
             for field in ("username", "first_name", "last_name", "email"):
@@ -428,7 +621,8 @@ class AdminUserUpdateView(APIView):
                     "last_name": user.last_name,
                     "on_probation": (
                         user.employee.is_on_probation()
-                        if getattr(user, "employee", None) and callable(getattr(user.employee, "is_on_probation", None))
+                        if getattr(user, "employee", None)
+                        and callable(getattr(user.employee, "is_on_probation", None))
                         else None
                     ),
                 },
@@ -440,19 +634,32 @@ class AdminUserUpdateView(APIView):
 class AdminUserDeleteByBodyView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
 
+    @extend_schema(
+        description="Delete a user by body (user_id).",
+        request=OpenApiTypes.OBJECT,
+        responses={
+            200: OpenApiTypes.OBJECT,
+            400: OpenApiTypes.OBJECT,
+            404: OpenApiTypes.OBJECT,
+            409: OpenApiTypes.OBJECT,
+            500: OpenApiTypes.OBJECT,
+        },
+    )
     @transaction.atomic
     def post(self, request):
         try:
             user_id = request.data.get("user_id")
             if not user_id:
-                return Response({"error": "user_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+                return Response(
+                    {"error": "user_id is required"}, status=status.HTTP_400_BAD_REQUEST
+                )
 
             try:
-                # Important: don't combine select_related() 
-                # select_for_update() on reverse one-to-one relations; PostgreSQL can reject it.
                 user = User.objects.select_for_update().get(id=int(user_id))
             except (User.DoesNotExist, ValueError, TypeError):
-                return Response({"error": "User not found"}, status=status.HTTP_404_NOT_FOUND)
+                return Response(
+                    {"error": "User not found"}, status=status.HTTP_404_NOT_FOUND
+                )
 
             if request.user and user.id == request.user.id:
                 return Response(
@@ -460,7 +667,6 @@ class AdminUserDeleteByBodyView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            # Prevent deleting privileged accounts.
             if user.is_staff or user.is_superuser:
                 return Response(
                     {"error": "Admin accounts cannot be deleted."},
@@ -501,6 +707,7 @@ class AdminUserDeleteByBodyView(APIView):
                 payload["exception"] = e.__class__.__name__
             return Response(payload, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+    @extend_schema(exclude=True)
     def delete(self, request):
         return self.post(request)
 
@@ -508,13 +715,26 @@ class AdminUserDeleteByBodyView(APIView):
 class LeavePolicySettingsView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
 
+    @extend_schema(
+        description="Get leave policy settings.",
+        responses={200: LeavePolicySettingsSerializer},
+    )
     def get(self, request):
         settings_obj = get_leave_policy_settings()
-        return Response(LeavePolicySettingsSerializer(settings_obj).data, status=status.HTTP_200_OK)
+        return Response(
+            LeavePolicySettingsSerializer(settings_obj).data, status=status.HTTP_200_OK
+        )
 
+    @extend_schema(
+        description="Update leave policy settings (partial).",
+        request=LeavePolicySettingsSerializer,
+        responses={200: LeavePolicySettingsSerializer, 400: OpenApiTypes.OBJECT},
+    )
     def patch(self, request):
         settings_obj = get_leave_policy_settings()
-        ser = LeavePolicySettingsSerializer(settings_obj, data=request.data, partial=True)
+        ser = LeavePolicySettingsSerializer(
+            settings_obj, data=request.data, partial=True
+        )
         ser.is_valid(raise_exception=True)
         ser.save()
         return Response(ser.data, status=status.HTTP_200_OK)
@@ -523,6 +743,10 @@ class LeavePolicySettingsView(APIView):
 class EmployeeRenewalScheduleView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
 
+    @extend_schema(
+        description="List employees with next renewal date (computed).",
+        responses={200: EmployeeRenewalScheduleSerializer(many=True)},
+    )
     def get(self, request):
         employees = (
             Employee.objects.select_related("user")
@@ -533,8 +757,16 @@ class EmployeeRenewalScheduleView(APIView):
         for emp in employees:
             emp.next_renewal_date = get_next_renewal_date(emp)
 
-        return Response(EmployeeRenewalScheduleSerializer(employees, many=True).data, status=status.HTTP_200_OK)
+        return Response(
+            EmployeeRenewalScheduleSerializer(employees, many=True).data,
+            status=status.HTTP_200_OK,
+        )
 
+    @extend_schema(
+        description="Override an employee renewal date.",
+        request=LeaveRenewalOverrideSerializer,
+        responses={200: EmployeeRenewalScheduleSerializer, 400: OpenApiTypes.OBJECT},
+    )
     def patch(self, request):
         ser = LeaveRenewalOverrideSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
@@ -547,19 +779,32 @@ class EmployeeRenewalScheduleView(APIView):
         emp.save(update_fields=["leave_renewal_date_override"])
 
         emp.next_renewal_date = get_next_renewal_date(emp)
-        return Response(EmployeeRenewalScheduleSerializer(emp).data, status=status.HTTP_200_OK)
+        return Response(
+            EmployeeRenewalScheduleSerializer(emp).data, status=status.HTTP_200_OK
+        )
 
 
 class ApproveLeaveByBodyView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
 
+    @extend_schema(
+        description="Approve leave by formID (or form_id) in request body.",
+        request=OpenApiTypes.OBJECT,
+        responses={
+            200: OpenApiTypes.OBJECT,
+            400: OpenApiTypes.OBJECT,
+            404: OpenApiTypes.OBJECT,
+        },
+    )
     @transaction.atomic
     def post(self, request):
         form_id = request.data.get("formID") or request.data.get("form_id")
         message = (request.data.get("message") or "").strip() or None
 
         if not form_id:
-            return Response({"error": "formID is required"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"error": "formID is required"}, status=status.HTTP_400_BAD_REQUEST
+            )
 
         try:
             lr = decide_leave(
@@ -568,9 +813,13 @@ class ApproveLeaveByBodyView(APIView):
                 message=message,
             )
         except (ValueError, TypeError):
-            return Response({"error": "Invalid formID"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"error": "Invalid formID"}, status=status.HTTP_400_BAD_REQUEST
+            )
         except LeaveRequest.DoesNotExist:
-            return Response({"error": "Leave request not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {"error": "Leave request not found"}, status=status.HTTP_404_NOT_FOUND
+            )
 
         lr.refresh_from_db()
         return Response(
@@ -587,13 +836,24 @@ class ApproveLeaveByBodyView(APIView):
 class RejectLeaveByBodyView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
 
+    @extend_schema(
+        description="Reject leave by formID (or form_id) in request body.",
+        request=OpenApiTypes.OBJECT,
+        responses={
+            200: OpenApiTypes.OBJECT,
+            400: OpenApiTypes.OBJECT,
+            404: OpenApiTypes.OBJECT,
+        },
+    )
     @transaction.atomic
     def post(self, request):
         form_id = request.data.get("formID") or request.data.get("form_id")
         message = (request.data.get("message") or "").strip()
 
         if not form_id:
-            return Response({"error": "formID is required"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"error": "formID is required"}, status=status.HTTP_400_BAD_REQUEST
+            )
 
         try:
             lr = decide_leave(
@@ -602,9 +862,13 @@ class RejectLeaveByBodyView(APIView):
                 message=message,
             )
         except (ValueError, TypeError):
-            return Response({"error": "Invalid formID"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"error": "Invalid formID"}, status=status.HTTP_400_BAD_REQUEST
+            )
         except LeaveRequest.DoesNotExist:
-            return Response({"error": "Leave request not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {"error": "Leave request not found"}, status=status.HTTP_404_NOT_FOUND
+            )
 
         lr.refresh_from_db()
         return Response(

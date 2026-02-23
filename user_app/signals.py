@@ -25,7 +25,7 @@ def ensure_profile_and_employee_exist(sender, instance, created, **kwargs):
             user=instance,
             defaults={
                 "name": instance.get_full_name() or instance.username,
-                "joining_date": joining_date, 
+                "joining_date": joining_date,
                 "probation_end_date": compute_probation_end_date(joining_date),
             },
         )

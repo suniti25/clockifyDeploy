@@ -16,7 +16,7 @@ class Employee(models.Model):
     joining_date = models.DateField()
     probation_end_date = models.DateField()
 
-    current_project = models.CharField(max_length=255, blank=True, null=True)  
+    current_project = models.CharField(max_length=255, blank=True, null=True)
 
     leave_renewal_date_override = models.DateField(null=True, blank=True)
 
@@ -42,6 +42,7 @@ class Project(models.Model):
 
     def __str__(self) -> str:
         return self.name
+
 
 class Profile(models.Model):
     ROLE_EMPLOYEE = "EMPLOYEE"

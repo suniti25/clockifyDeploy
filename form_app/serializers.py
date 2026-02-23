@@ -11,7 +11,6 @@ from form_app.helpers import (
 
 
 class LeaveCreateSerializer(serializers.ModelSerializer):
-
     class Meta:
         model = LeaveRequest
         fields = ["leave_type", "start_date", "end_date", "session", "reason"]
@@ -63,7 +62,9 @@ class LeaveCreateSerializer(serializers.ModelSerializer):
         validated_data["start_session"] = validated_data["session"]
         validated_data["end_session"] = validated_data["session"]
 
-        leave_days = compute_leave_days_for_payload(employee=employee, payload=validated_data)
+        leave_days = compute_leave_days_for_payload(
+            employee=employee, payload=validated_data
+        )
 
         is_paid = compute_paid_status(
             employee=employee,
@@ -82,7 +83,9 @@ class LeaveCreateSerializer(serializers.ModelSerializer):
     @transaction.atomic
     def update(self, instance, validated_data):
         if instance.status != "PENDING":
-            raise serializers.ValidationError("Only pending leave requests can be updated.")
+            raise serializers.ValidationError(
+                "Only pending leave requests can be updated."
+            )
 
         for field, value in validated_data.items():
             setattr(instance, field, value)
@@ -137,5 +140,7 @@ class LeaveUpdateByBodySerializer(serializers.Serializer):
         allowed = {"leave_type", "start_date", "end_date", "session", "reason"}
         unknown = set(payload.keys()) - allowed
         if unknown:
-            raise serializers.ValidationError(f"Unknown fields: {sorted(list(unknown))}")
+            raise serializers.ValidationError(
+                f"Unknown fields: {sorted(list(unknown))}"
+            )
         return payload

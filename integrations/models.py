@@ -3,13 +3,12 @@ from django.db import models
 
 
 class GoogleCalendarCredential(models.Model):
-  
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
 
     google_email = models.EmailField(blank=True, default="")
     calendar_id = models.CharField(max_length=255, default="primary")
 
-    refresh_token_encrypted = models.TextField() # encrypted
+    refresh_token_encrypted = models.TextField()  # encrypted
     access_token = models.TextField(blank=True, default="")
     token_expiry = models.DateTimeField(null=True, blank=True)
 

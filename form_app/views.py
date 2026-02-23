@@ -6,27 +6,35 @@ from datetime import date
 from django.db import transaction
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
+
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from form_app.models import LeaveRequest
+from drf_spectacular.utils import extend_schema
+from drf_spectacular.types import OpenApiTypes
+
+from discord_app.services import send_leave_request_to_admin
 from form_app.helpers import (
-    validate_leave_application_inputs,
     compute_leave_days_for_payload,
     compute_paid_status,
+    compute_paid_unpaid_split,
+    compute_paid_unpaid_split_for_request,
     display_is_paid,
+    validate_leave_application_inputs,
 )
+from form_app.models import LeaveRequest
 from user_app.helpers import _get_profile_and_employee
-from discord_app.services import send_leave_request_to_admin
 
 logger = logging.getLogger(__name__)
 
 
 def _parse_iso_date(value, field_name: str):
     if value is None:
-        return None, Response({"error": f"{field_name} is required"}, status=status.HTTP_400_BAD_REQUEST)
+        return None, Response(
+            {"error": f"{field_name} is required"}, status=status.HTTP_400_BAD_REQUEST
+        )
 
     if isinstance(value, date):
         return value, None
@@ -35,15 +43,29 @@ def _parse_iso_date(value, field_name: str):
         try:
             return date.fromisoformat(value), None
         except ValueError:
-            return None, Response({"error": f"Invalid {field_name}. Use YYYY-MM-DD."}, status=status.HTTP_400_BAD_REQUEST)
+            return None, Response(
+                {"error": f"Invalid {field_name}. Use YYYY-MM-DD."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-    return None, Response({"error": f"Invalid {field_name}. Use YYYY-MM-DD."}, status=status.HTTP_400_BAD_REQUEST)
+    return None, Response(
+        {"error": f"Invalid {field_name}. Use YYYY-MM-DD."},
+        status=status.HTTP_400_BAD_REQUEST,
+    )
 
 
+@extend_schema(
+    description="Apply a leave request (creates a PENDING request and notifies admin via Discord).",
+    request=OpenApiTypes.OBJECT,
+    responses={
+        201: OpenApiTypes.OBJECT,
+        400: OpenApiTypes.OBJECT,
+        401: OpenApiTypes.OBJECT,
+    },
+)
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def apply_leave(request):
-
     profile, employee, err = _get_profile_and_employee(request)
     if err:
         return err
@@ -55,7 +77,6 @@ def apply_leave(request):
     leave_type = data.get("leave_type")
     reason = data.get("reason", "") or ""
 
-    # single session only
     session = data.get("session") or data.get("half_day") or "FULL"
 
     start_date, resp = _parse_iso_date(start_date_val, "start_date")
@@ -90,6 +111,15 @@ def apply_leave(request):
         payload["applied_at"] = timezone.now()
 
     leave_days = compute_leave_days_for_payload(employee=employee, payload=payload)
+
+    paid_days, unpaid_days, remaining_paid_days = compute_paid_unpaid_split(
+        employee=employee,
+        leave_type=normalized_leave_type,
+        leave_days=leave_days,
+        start_date=start_date,
+        end_date=end_date,
+    )
+
     payload["is_paid"] = bool(
         compute_paid_status(
             employee=employee,
@@ -105,7 +135,9 @@ def apply_leave(request):
     try:
         send_leave_request_to_admin(lr)
     except Exception:
-        logger.exception("Failed to send leave request to Discord for leave_id=%s", lr.id)
+        logger.exception(
+            "Failed to send leave request to Discord for leave_id=%s", lr.id
+        )
 
     return Response(
         {
@@ -118,19 +150,22 @@ def apply_leave(request):
             "status": lr.status,
             "is_paid": display_is_paid(lr.leave_type, getattr(lr, "is_paid", None)),
             "days": float(lr.total_days()),
+            "paid_days": float(paid_days),
+            "unpaid_days": float(unpaid_days),
+            "remaining_paid_days_before_request": float(remaining_paid_days),
             "reapplied_from": getattr(lr, "reapplied_from_id", None),
         },
         status=status.HTTP_201_CREATED,
     )
 
 
+@extend_schema(
+    description="Get current user's leave requests (latest first).",
+    responses={200: OpenApiTypes.OBJECT},
+)
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def get_requests(request):
-    """
-    GET /api/form/requests/
-    Returns current user's leave requests (latest first)
-    """
     _, employee, err = _get_profile_and_employee(request)
     if err:
         return Response([], status=status.HTTP_200_OK)
@@ -140,6 +175,9 @@ def get_requests(request):
     results = []
     for lr in qs[:200]:
         created_at = getattr(lr, "applied_at", None) or getattr(lr, "created_at", None)
+        paid_days, unpaid_days = compute_paid_unpaid_split_for_request(
+            employee=employee, req=lr
+        )
         results.append(
             {
                 "id": lr.id,
@@ -150,6 +188,8 @@ def get_requests(request):
                 "status": lr.status,
                 "is_paid": display_is_paid(lr.leave_type, getattr(lr, "is_paid", None)),
                 "days": float(lr.total_days()) if hasattr(lr, "total_days") else None,
+                "paid_days": float(paid_days),
+                "unpaid_days": float(unpaid_days),
                 "reason": getattr(lr, "reason", "") or "",
                 "submitted_at": created_at.isoformat() if created_at else None,
                 "discord_message_id": getattr(lr, "discord_message_id", None),
@@ -159,6 +199,21 @@ def get_requests(request):
 
     return Response(results, status=status.HTTP_200_OK)
 
+
+@extend_schema(
+    description=(
+        "Update a leave by request body. "
+        "If original is PENDING -> updates it, else creates a new PENDING re-apply linked to original."
+    ),
+    request=OpenApiTypes.OBJECT,
+    responses={
+        200: OpenApiTypes.OBJECT,
+        201: OpenApiTypes.OBJECT,
+        400: OpenApiTypes.OBJECT,
+        401: OpenApiTypes.OBJECT,
+        404: OpenApiTypes.OBJECT,
+    },
+)
 @api_view(["PUT", "PATCH"])
 @permission_classes([IsAuthenticated])
 def update_leave_by_body(request):
@@ -186,7 +241,9 @@ def update_leave_by_body(request):
     end_date_val = payload.get("end_date", original.end_date)
     leave_type = payload.get("leave_type", original.leave_type)
     reason = payload.get("reason", getattr(original, "reason", "")) or ""
-    session = payload.get("session") or payload.get("half_day") or original.session or "FULL"
+    session = (
+        payload.get("session") or payload.get("half_day") or original.session or "FULL"
+    )
 
     start_date, resp = _parse_iso_date(start_date_val, "start_date")
     if resp:
@@ -206,7 +263,6 @@ def update_leave_by_body(request):
         instance_id=original.id,
     )
 
-    # CASE 1: PENDING -> UPDATE
     if original.status == "PENDING":
         original.start_date = start_date
         original.end_date = end_date
@@ -227,7 +283,9 @@ def update_leave_by_body(request):
             "status": original.status,
         }
 
-        leave_days = compute_leave_days_for_payload(employee=employee, payload=payload_for_days)
+        leave_days = compute_leave_days_for_payload(
+            employee=employee, payload=payload_for_days
+        )
         original.is_paid = bool(
             compute_paid_status(
                 employee=employee,
@@ -243,9 +301,12 @@ def update_leave_by_body(request):
 
         try:
             from discord_app.services import update_admin_leave_message
+
             update_admin_leave_message(original)
         except Exception:
-            logger.exception("Failed updating Discord message for leave_id=%s", original.id)
+            logger.exception(
+                "Failed updating Discord message for leave_id=%s", original.id
+            )
 
         return Response(
             {
@@ -257,9 +318,6 @@ def update_leave_by_body(request):
             },
             status=status.HTTP_200_OK,
         )
-
-
-    # CASE 2: APPROVED/REJECTED -> REAPPLY (create new)
 
     new_payload = {
         "leave_type": normalized_leave_type,
@@ -289,7 +347,6 @@ def update_leave_by_body(request):
     with transaction.atomic():
         new_lr = LeaveRequest.objects.create(employee=employee, **new_payload)
 
-        # link reapply history
         if hasattr(new_lr, "reapplied_from"):
             new_lr.reapplied_from = original
             new_lr.save(update_fields=["reapplied_from"])
@@ -302,7 +359,9 @@ def update_leave_by_body(request):
     try:
         send_leave_request_to_admin(new_lr)
     except Exception:
-        logger.exception("Failed to send reapply leave request to Discord for leave_id=%s", new_lr.id)
+        logger.exception(
+            "Failed to send reapply leave request to Discord for leave_id=%s", new_lr.id
+        )
 
     return Response(
         {
@@ -315,4 +374,3 @@ def update_leave_by_body(request):
         },
         status=status.HTTP_201_CREATED,
     )
-

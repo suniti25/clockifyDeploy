@@ -18,8 +18,23 @@ if load_dotenv:
 DISCORD_CRON_SECRET = os.getenv("DISCORD_CRON_SECRET", "")
 DISCORD_DEBUG = os.getenv("DISCORD_DEBUG", "")
 
+# Optional: proxy interactions for a specific channel to a local/ngrok URL.
+# This allows keeping Discord's Interactions Endpoint URL pointed at Azure while still
+# testing locally for a dev channel.
+DISCORD_INTERACTIONS_PROXY_URL = os.getenv("DISCORD_INTERACTIONS_PROXY_URL", "").strip()
+DISCORD_INTERACTIONS_PROXY_CHANNEL_ID = os.getenv(
+    "DISCORD_INTERACTIONS_PROXY_CHANNEL_ID", ""
+).strip()
+
+
 def env_bool(key: str, default: bool = False) -> bool:
-    return os.getenv(key, str(default)).strip().lower() in ("1", "true", "yes", "y", "on")
+    return os.getenv(key, str(default)).strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "y",
+        "on",
+    )
 
 
 def env_list(key: str, default=None, sep: str = ","):
@@ -29,6 +44,7 @@ def env_list(key: str, default=None, sep: str = ","):
     if not val:
         return default
     return [x.strip() for x in val.split(sep) if x.strip()]
+
 
 # DJANGO CORE
 
@@ -52,15 +68,13 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
-
+    "drf_spectacular",
     "user_app.apps.UserAppConfig",
-    
     "auth_app",
     "form_app.apps.FormAppConfig",
     "admin_app",
     "discord_app",
     "integrations",
-
     "rest_framework_simplejwt.token_blacklist",
 ]
 # MIDDLEWARE
@@ -76,6 +90,7 @@ MIDDLEWARE = [
 ]
 
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+USE_X_FORWARDED_HOST = True
 
 
 ROOT_URLCONF = "leave_system.urls"
@@ -97,10 +112,12 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "leave_system.wsgi.application"
 
-# DATABASE 
+# DATABASE
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
-    raise RuntimeError("DATABASE_URL is not set. Put it in .env or environment variables.")
+    raise RuntimeError(
+        "DATABASE_URL is not set. Put it in .env or environment variables."
+    )
 
 DATABASES = {
     "default": dj_database_url.parse(DATABASE_URL, conn_max_age=600),
@@ -108,8 +125,13 @@ DATABASES = {
 
 # PASSWORD VALIDATION
 AUTH_PASSWORD_VALIDATORS = [
-    {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
-    {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator", "OPTIONS": {"min_length": 8}},
+    {
+        "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"
+    },
+    {
+        "NAME": "django.contrib.auth.password_validation.MinimumLengthValidator",
+        "OPTIONS": {"min_length": 8},
+    },
     {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
     {"NAME": "core.validators.SymbolPasswordValidator"},
@@ -120,29 +142,24 @@ REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
         "rest_framework_simplejwt.authentication.JWTAuthentication",
     ),
-    "DEFAULT_PERMISSION_CLASSES": (
-        "rest_framework.permissions.IsAuthenticated",
-    ),
+    "DEFAULT_PERMISSION_CLASSES": ("rest_framework.permissions.IsAuthenticated",),
     "DEFAULT_PARSER_CLASSES": (
         "rest_framework.parsers.JSONParser",
         "rest_framework.parsers.FormParser",
         "rest_framework.parsers.MultiPartParser",
     ),
-    "DEFAULT_RENDERER_CLASSES": (
-        "rest_framework.renderers.JSONRenderer",
-    ),
+    "DEFAULT_RENDERER_CLASSES": ("rest_framework.renderers.JSONRenderer",),
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
 }
 
-
-
-# SIMPLE JWT 
+# SIMPLE JWT
 
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(minutes=10),
     "REFRESH_TOKEN_LIFETIME": timedelta(days=30),
     "AUTH_HEADER_TYPES": ("Bearer",),
-    "ROTATE_REFRESH_TOKENS": False,
-    "BLACKLIST_AFTER_ROTATION": False,
+    "ROTATE_REFRESH_TOKENS": True,
+    "BLACKLIST_AFTER_ROTATION": True,
 }
 
 # CORS
@@ -210,7 +227,9 @@ STATIC_ROOT = BASE_DIR / "staticfiles"
 
 
 # EMAIL
-EMAIL_BACKEND = os.getenv("EMAIL_BACKEND", "django.core.mail.backends.console.EmailBackend")
+EMAIL_BACKEND = os.getenv(
+    "EMAIL_BACKEND", "django.core.mail.backends.console.EmailBackend"
+)
 DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "noreply@leavesystem.com")
 
 EMAIL_HOST = os.getenv("EMAIL_HOST", "")
@@ -219,7 +238,9 @@ EMAIL_USE_TLS = env_bool("EMAIL_USE_TLS", True)
 EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "")
 EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
 
-if EMAIL_HOST.strip() and (not EMAIL_HOST_USER.strip() or not EMAIL_HOST_PASSWORD.strip()):
+if EMAIL_HOST.strip() and (
+    not EMAIL_HOST_USER.strip() or not EMAIL_HOST_PASSWORD.strip()
+):
     raise RuntimeError(
         "EMAIL_HOST is set but EMAIL_HOST_USER/EMAIL_HOST_PASSWORD is missing. "
         "Provide full SMTP credentials or unset EMAIL_HOST to disable SMTP."
@@ -227,9 +248,12 @@ if EMAIL_HOST.strip() and (not EMAIL_HOST_USER.strip() or not EMAIL_HOST_PASSWOR
 
 # Frontend URL for password reset page
 FRONTEND_PASSWORD_RESET_URL = (
-    (os.getenv("FRONTEND_PASSWORD_RESET_URL") or os.getenv("FRONTEND_RESET_PASSWORD_URL") or "").strip())
+    os.getenv("FRONTEND_PASSWORD_RESET_URL")
+    or os.getenv("FRONTEND_RESET_PASSWORD_URL")
+    or ""
+).strip()
 
-# DISCORD 
+# DISCORD
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")
 DISCORD_PUBLIC_KEY = os.getenv("DISCORD_PUBLIC_KEY", "")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
@@ -238,7 +262,9 @@ DISCORD_ADMIN_CHANNEL_ID = os.getenv("DISCORD_ADMIN_CHANNEL_ID", "")
 DISCORD_EMPLOYEE_CHANNEL_ID = os.getenv("DISCORD_EMPLOYEE_CHANNEL_ID", "")
 
 DISCORD_ADMIN_CHANNEL_NAME = os.getenv("DISCORD_ADMIN_CHANNEL_NAME", "admin_channel")
-DISCORD_EMPLOYEE_CHANNEL_NAME = os.getenv("DISCORD_EMPLOYEE_CHANNEL_NAME", "leaves_and_notices")
+DISCORD_EMPLOYEE_CHANNEL_NAME = os.getenv(
+    "DISCORD_EMPLOYEE_CHANNEL_NAME", "leaves_and_notices"
+)
 
 
 # PRODUCTION SECURITY

@@ -5,8 +5,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
 
-from django.db.models import Q, Value, CharField, F
-from django.db.models.functions import Upper, Trim, Replace
+from django.db.models import Q
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.response import Response
@@ -16,12 +15,18 @@ from form_app.policies import (
     get_carryover_percentage,
     get_leave_year_range_for_employee,
 )
-from form_app.helpers import overlapping_days as form_overlapping_days, display_is_paid
+from form_app.helpers import (
+    overlapping_days as form_overlapping_days,
+    display_is_paid,
+    compute_paid_unpaid_split_for_request,
+    _norm_status_expr,
+)
 from form_app.models import LeaveRequest
 
 from .models import Profile
 
 # LEAVE YEAR HELPERS
+
 
 def get_leave_year_range(employee, today: date) -> tuple[date, date]:
     return get_leave_year_range_for_employee(employee, on_date=today)
@@ -53,7 +58,6 @@ def carry_forward_only(employee, prev_start: date, prev_end_exclusive: date) -> 
     )
 
     for lr in qs:
-    
         prev_used += float(lr.total_days())
 
     prev_remaining = max(yearly_vacation - prev_used, 0.0)
@@ -62,7 +66,7 @@ def carry_forward_only(employee, prev_start: date, prev_end_exclusive: date) -> 
 
     # round to nearest 0.5
     carry = _round_to_half_day(carry_raw)
-    carry_floor = (int(carry_raw / 0.5) * 0.5) 
+    carry_floor = int(carry_raw / 0.5) * 0.5
     carry = min(carry, carry_floor)
 
     return float(carry)
@@ -99,18 +103,24 @@ def parse_month_param(month_str: str) -> tuple[Optional[date], Optional[date]]:
         try:
             dt = datetime.strptime(s, fmt)
             start = date(dt.year, dt.month, 1)
-            end_excl = date(dt.year + 1, 1, 1) if dt.month == 12 else date(dt.year, dt.month + 1, 1)
+            end_excl = (
+                date(dt.year + 1, 1, 1)
+                if dt.month == 12
+                else date(dt.year, dt.month + 1, 1)
+            )
             return start, end_excl
         except ValueError:
             continue
 
-    # Month only:assume current year 
+    # Month only:assume current year
     try:
         m = int(s)
         if 1 <= m <= 12:
             today = datetime.now().date()
             start = date(today.year, m, 1)
-            end_excl = date(today.year + 1, 1, 1) if m == 12 else date(today.year, m + 1, 1)
+            end_excl = (
+                date(today.year + 1, 1, 1) if m == 12 else date(today.year, m + 1, 1)
+            )
             return start, end_excl
     except ValueError:
         return None, None
@@ -118,21 +128,9 @@ def parse_month_param(month_str: str) -> tuple[Optional[date], Optional[date]]:
     return None, None
 
 
-def _norm_status_expr(field_name: str = "status"):
-
-    return Upper(
-        Trim(
-            Replace(
-                F(field_name),
-                Value("\u00A0"),  
-                Value(""),
-                output_field=CharField(),
-            )
-        )
-    )
-
-
-def apply_history_filters(qs, search: str = "", month: str = "", leave_type: str = "", status_filter: str = ""):
+def apply_history_filters(
+    qs, search: str = "", month: str = "", leave_type: str = "", status_filter: str = ""
+):
 
     search = (search or "").strip()
     month = (month or "").strip()
@@ -159,7 +157,9 @@ def apply_history_filters(qs, search: str = "", month: str = "", leave_type: str
 
     if status_filter:
         wanted = status_filter.upper()
-        qs = qs.annotate(_status_norm=_norm_status_expr("status")).filter(_status_norm=wanted)
+        qs = qs.annotate(_status_norm=_norm_status_expr("status")).filter(
+            _status_norm=wanted
+        )
 
     if month:
         start, end_excl = parse_month_param(month)
@@ -169,7 +169,8 @@ def apply_history_filters(qs, search: str = "", month: str = "", leave_type: str
 
     return qs
 
-# VIEW HELPERS 
+
+# VIEW HELPERS
 @dataclass(frozen=True)
 class LeaveYearContext:
     today: date
@@ -225,11 +226,21 @@ def _get_profile_and_employee(request):
     try:
         profile = Profile.objects.select_related("employee").get(user=request.user)
     except Profile.DoesNotExist:
-        return None, None, Response({"error": "Profile not found"}, status=status.HTTP_404_NOT_FOUND)
+        return (
+            None,
+            None,
+            Response({"error": "Profile not found"}, status=status.HTTP_404_NOT_FOUND),
+        )
 
     employee = profile.employee
     if not employee:
-        return profile, None, Response({"error": "Employee record not found"}, status=status.HTTP_404_NOT_FOUND)
+        return (
+            profile,
+            None,
+            Response(
+                {"error": "Employee record not found"}, status=status.HTTP_404_NOT_FOUND
+            ),
+        )
 
     return profile, employee, None
 
@@ -272,7 +283,9 @@ def _approved_requests_in_year(employee, ctx: LeaveYearContext):
 
 
 def _aggregate_approved_usage(employee, ctx: LeaveYearContext):
-    approved_qs = _approved_requests_in_year(employee, ctx).order_by("start_date", "end_date", "id")
+    approved_qs = _approved_requests_in_year(employee, ctx).order_by(
+        "start_date", "end_date", "id"
+    )
 
     paid_used_by_type: dict[str, float] = {}
     probation_leave_total = 0.0
@@ -283,10 +296,14 @@ def _aggregate_approved_usage(employee, ctx: LeaveYearContext):
         lt: float(limit) for lt, limit in limits.items()
     }
     if "VACATION" in total_allowed_by_type:
-        total_allowed_by_type["VACATION"] = float(limits.get("VACATION", 0.0)) + float(ctx.vacation_carry)
+        total_allowed_by_type["VACATION"] = float(limits.get("VACATION", 0.0)) + float(
+            ctx.vacation_carry
+        )
 
     for lr in approved_qs:
-        days_in_window = float(form_overlapping_days(lr, ctx.leave_year_start, ctx.leave_year_end_excl))
+        days_in_window = float(
+            form_overlapping_days(lr, ctx.leave_year_start, ctx.leave_year_end_excl)
+        )
         if days_in_window <= 0:
             continue
 
@@ -309,7 +326,9 @@ def _aggregate_approved_usage(employee, ctx: LeaveYearContext):
             unpaid_leave_total += days_in_window
             continue
 
-        remaining = max(total_allowed_by_type[lt] - float(paid_used_by_type.get(lt, 0.0)), 0.0)
+        remaining = max(
+            total_allowed_by_type[lt] - float(paid_used_by_type.get(lt, 0.0)), 0.0
+        )
         paid_portion = min(remaining, days_in_window)
         unpaid_portion = max(days_in_window - paid_portion, 0.0)
 
@@ -378,22 +397,38 @@ def _leave_balance_list(
 
 
 def _serialize_upcoming(req: LeaveRequest) -> dict:
-    label = req.get_leave_type_display() if hasattr(req, "get_leave_type_display") else (req.leave_type or "")
+    label = (
+        req.get_leave_type_display()
+        if hasattr(req, "get_leave_type_display")
+        else (req.leave_type or "")
+    )
+    paid_days, unpaid_days = compute_paid_unpaid_split_for_request(
+        employee=req.employee, req=req
+    )
     return {
         "id": str(req.id),
         "leave_type": label,
         "start_date": req.start_date.isoformat() if req.start_date else None,
         "end_date": req.end_date.isoformat() if req.end_date else None,
         "days": float(req.total_days()) if hasattr(req, "total_days") else None,
+        "paid_days": float(paid_days),
+        "unpaid_days": float(unpaid_days),
         "status": (req.status or "").strip().upper(),
         "message": f"{label} leave upcoming",
     }
 
 
 def _serialize_recent(req: LeaveRequest) -> dict:
-    leave_type_label = req.get_leave_type_display() if hasattr(req, "get_leave_type_display") else (req.leave_type or "")
+    leave_type_label = (
+        req.get_leave_type_display()
+        if hasattr(req, "get_leave_type_display")
+        else (req.leave_type or "")
+    )
     applied_at = getattr(req, "applied_at", None)
     reviewed_at = getattr(req, "reviewed_at", None) or getattr(req, "approved_at", None)
+    paid_days, unpaid_days = compute_paid_unpaid_split_for_request(
+        employee=req.employee, req=req
+    )
 
     return {
         "id": str(req.id),
@@ -402,6 +437,8 @@ def _serialize_recent(req: LeaveRequest) -> dict:
         "start_date": req.start_date.isoformat() if req.start_date else None,
         "end_date": req.end_date.isoformat() if req.end_date else None,
         "days": float(req.total_days()) if hasattr(req, "total_days") else None,
+        "paid_days": float(paid_days),
+        "unpaid_days": float(unpaid_days),
         "session": _session_label(getattr(req, "session", None)),
         "is_paid": display_is_paid(req.leave_type, getattr(req, "is_paid", None)),
         "applied_at": applied_at.isoformat() if applied_at else None,

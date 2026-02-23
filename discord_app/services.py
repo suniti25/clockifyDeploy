@@ -17,10 +17,13 @@ logger = logging.getLogger(__name__)
 DISCORD_API_BASE = "https://discord.com/api/v10"
 HTTP_TIMEOUT = aiohttp.ClientTimeout(total=12)
 
+
 # CORE DISCORD HTTP
 async def _discord_request(method: str, url: str, payload: dict | None):
     if not settings.DISCORD_TOKEN:
-        logger.warning("settings.DISCORD_TOKEN not configured; skipping Discord request.")
+        logger.warning(
+            "settings.DISCORD_TOKEN not configured; skipping Discord request."
+        )
         return None
 
     headers = {
@@ -30,13 +33,18 @@ async def _discord_request(method: str, url: str, payload: dict | None):
 
     try:
         async with aiohttp.ClientSession(timeout=HTTP_TIMEOUT) as session:
-            async with session.request(method, url, json=payload, headers=headers) as resp:
+            async with session.request(
+                method, url, json=payload, headers=headers
+            ) as resp:
                 text = await resp.text()
 
                 if resp.status not in (200, 201, 204):
                     logger.error(
                         "Discord API failed: %s %s status=%s body=%s",
-                        method, url, resp.status, text
+                        method,
+                        url,
+                        resp.status,
+                        text,
                     )
                     return None
 
@@ -53,7 +61,9 @@ async def _discord_request(method: str, url: str, payload: dict | None):
         return None
 
 
-async def send_discord_message(*, channel_id: int | None, embed=None, content=None, components=None):
+async def send_discord_message(
+    *, channel_id: int | None, embed=None, content=None, components=None
+):
     if not channel_id:
         logger.warning("No channel_id provided; skipping Discord send.")
         return None
@@ -74,7 +84,9 @@ async def send_discord_message(*, channel_id: int | None, embed=None, content=No
     return data.get("id")
 
 
-async def patch_discord_message(channel_id: int, message_id: str, *, content=None, embeds=None, components=None) -> bool:
+async def patch_discord_message(
+    channel_id: int, message_id: str, *, content=None, embeds=None, components=None
+) -> bool:
     url = f"{DISCORD_API_BASE}/channels/{channel_id}/messages/{message_id}"
 
     payload: dict = {}
@@ -89,7 +101,7 @@ async def patch_discord_message(channel_id: int, message_id: str, *, content=Non
     return bool(data)
 
 
-# HELPERS 
+# HELPERS
 def _employee_name(leave: LeaveRequest) -> str:
     u = leave.employee.user
     return (u.get_full_name() or u.username or "Unknown").strip()
@@ -140,11 +152,22 @@ def _approval_components(leave_id: int):
         {
             "type": 1,
             "components": [
-                {"type": 2, "style": 3, "label": "Approve", "custom_id": f"leave_approve_{leave_id}"},
-                {"type": 2, "style": 4, "label": "Reject", "custom_id": f"leave_reject_{leave_id}"},
+                {
+                    "type": 2,
+                    "style": 3,
+                    "label": "Approve",
+                    "custom_id": f"leave_approve_{leave_id}",
+                },
+                {
+                    "type": 2,
+                    "style": 4,
+                    "label": "Reject",
+                    "custom_id": f"leave_reject_{leave_id}",
+                },
             ],
         }
     ]
+
 
 # EMBED BUILDER
 def _build_leave_embed(leave: LeaveRequest) -> dict:
@@ -173,15 +196,22 @@ def _build_leave_embed(leave: LeaveRequest) -> dict:
             {"name": "Employee Name", "value": employee_name, "inline": False},
             {"name": "Project", "value": project, "inline": False},
             {"name": "From – To (MM-DD-YYYY)", "value": from_to, "inline": False},
-
-            {"name": "Leave Type", "value": leave.get_leave_type_display(), "inline": True},
+            {
+                "name": "Leave Type",
+                "value": leave.get_leave_type_display(),
+                "inline": True,
+            },
             {"name": "Session", "value": leave.get_session_display(), "inline": True},
         ]
     )
 
     if paid_status is not None:
         fields.append(
-            {"name": "Paid/Unpaid", "value": "Paid" if paid_status else "Unpaid", "inline": True}
+            {
+                "name": "Paid/Unpaid",
+                "value": "Paid" if paid_status else "Unpaid",
+                "inline": True,
+            }
         )
 
     fields.extend(
@@ -198,6 +228,7 @@ def _build_leave_embed(leave: LeaveRequest) -> dict:
         "color": 0x3498DB,
         "fields": fields,
     }
+
 
 # ADMIN MESSAGE HANDLING
 def send_leave_request_to_admin(leave: LeaveRequest):
@@ -231,7 +262,9 @@ def update_admin_leave_message(leave: LeaveRequest):
         )
         return False
     if not settings.DISCORD_ADMIN_CHANNEL_ID:
-        logger.warning("DISCORD_settings.DISCORD_ADMIN_CHANNEL_ID not configured; skipping message update.")
+        logger.warning(
+            "DISCORD_settings.DISCORD_ADMIN_CHANNEL_ID not configured; skipping message update."
+        )
         return False
 
     embed = _build_leave_embed(leave)
@@ -258,6 +291,7 @@ update_discord_leave_message = update_admin_leave_message
 
 # DAILY QUERY HELPERS
 
+
 def _active_today_qs(target_date: date):
     """Approved leaves that are ACTIVE today (on leave today)."""
     return (
@@ -282,10 +316,13 @@ def _approved_today_qs(target_date: date):
         .order_by("employee__user__first_name", "employee__user__last_name")
     )
 
+
 # EMPLOYEE CHANNEL
 def send_approved_leave_to_employees(leave: LeaveRequest) -> bool:
     if not settings.DISCORD_ADMIN_CHANNEL_ID:
-        logger.warning("DISCORD_settings.DISCORD_ADMIN_CHANNEL_ID not configured; skipping approval announcement.")
+        logger.warning(
+            "DISCORD_settings.DISCORD_ADMIN_CHANNEL_ID not configured; skipping approval announcement."
+        )
         return False
 
     label = leave.get_leave_type_display()
@@ -308,7 +345,9 @@ def send_approved_leave_to_employees(leave: LeaveRequest) -> bool:
 
 def send_rejected_leave_to_employees(leave: LeaveRequest) -> bool:
     if not settings.DISCORD_ADMIN_CHANNEL_ID:
-        logger.warning("DISCORD_settings.DISCORD_ADMIN_CHANNEL_ID not configured; skipping rejection announcement.")
+        logger.warning(
+            "DISCORD_settings.DISCORD_ADMIN_CHANNEL_ID not configured; skipping rejection announcement."
+        )
         return False
 
     label = leave.get_leave_type_display()
@@ -341,7 +380,9 @@ def send_employee_on_leave_today():
         label = leave.get_leave_type_display()
         if label.upper() not in ("WFH",):
             label = f"{label} Leave"
-        lines.append(f"- {_employee_name(leave)} — {label} — {leave.get_session_display()}")
+        lines.append(
+            f"- {_employee_name(leave)} — {label} — {leave.get_session_display()}"
+        )
 
     content = "\n".join(lines)
 
@@ -355,6 +396,7 @@ def send_employee_on_leave_today():
 
     qs.update(notified_employee_at=timezone.now())
     return True
+
 
 # ADMIN CHANNEL
 def send_admin_approved_today():
@@ -383,6 +425,7 @@ def send_admin_approved_today():
     qs.update(notified_admin_at=timezone.now())
     return True
 
+
 # EMAILS
 def send_approval_email_to_employee(leave: LeaveRequest):
     user = leave.employee.user
@@ -405,7 +448,9 @@ def send_approval_email_to_employee(leave: LeaveRequest):
     duration_days = _format_leave_duration_days(leave.total_days())
     duration_line = f"Duration Taken: {duration_days}" if duration_days else ""
     duration_html_line = (
-        f"<strong>Duration Taken:</strong> {escape(duration_days)}<br/>" if duration_days else ""
+        f"<strong>Duration Taken:</strong> {escape(duration_days)}<br/>"
+        if duration_days
+        else ""
     )
 
     paid_status = display_is_paid(leave.leave_type, getattr(leave, "is_paid", None))
@@ -419,10 +464,14 @@ def send_approval_email_to_employee(leave: LeaveRequest):
         paid_html_line = "<strong>Paid Status:</strong> Unpaid<br/>"
 
     approval_reason = (getattr(leave, "approval_reason", None) or "").strip()
-    approval_reason_line = f"Admin Approval Reason: {approval_reason}" if approval_reason else ""
+    approval_reason_line = (
+        f"Admin Approval Reason: {approval_reason}" if approval_reason else ""
+    )
     approval_reason_html = escape(approval_reason).replace("\n", "<br/>")
     approval_reason_html_line = (
-        f"<strong>Admin Approval Reason:</strong> {approval_reason_html}<br/>" if approval_reason else ""
+        f"<strong>Admin Approval Reason:</strong> {approval_reason_html}<br/>"
+        if approval_reason
+        else ""
     )
 
     details_text = "\n".join(
@@ -507,6 +556,7 @@ Avinto Admin Team
     )
     return True
 
+
 def send_rejection_email_to_employee(leave: LeaveRequest):
     user = leave.employee.user
     if not user.email:
@@ -527,10 +577,14 @@ def send_rejection_email_to_employee(leave: LeaveRequest):
     duration_days = _format_leave_duration_days(leave.total_days())
     duration_line = f"Duration Taken: {duration_days}" if duration_days else ""
     duration_html_line = (
-        f"<strong>Duration Taken:</strong> {escape(duration_days)}<br/>" if duration_days else ""
+        f"<strong>Duration Taken:</strong> {escape(duration_days)}<br/>"
+        if duration_days
+        else ""
     )
 
-    rejection_reason = (getattr(leave, "rejection_reason", None) or "No reason provided").strip()
+    rejection_reason = (
+        getattr(leave, "rejection_reason", None) or "No reason provided"
+    ).strip()
     rejection_reason_html = escape(rejection_reason).replace("\n", "<br/>")
 
     details_text = "\n".join(

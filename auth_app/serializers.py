@@ -6,7 +6,10 @@ from django.contrib.auth.password_validation import validate_password
 from rest_framework import serializers
 
 from user_app.models import Profile, Employee
-from form_app.policies import compute_probation_end_date, get_leave_year_range_for_employee
+from form_app.policies import (
+    compute_probation_end_date,
+    get_leave_year_range_for_employee,
+)
 
 
 class LoginSerializer(serializers.Serializer):
@@ -28,7 +31,9 @@ class LoginSerializer(serializers.Serializer):
                 )
 
             if User.objects.filter(email=provided_email).exclude(pk=user.pk).exists():
-                raise serializers.ValidationError({"email": "This email is already in use."})
+                raise serializers.ValidationError(
+                    {"email": "This email is already in use."}
+                )
 
             user.email = provided_email
             user.save(update_fields=["email"])
@@ -61,6 +66,7 @@ class RegisterSerializer(serializers.ModelSerializer):
 
         # Require at least one symbol character (e.g. @, #, !)
         import re
+
         if not re.search(r"[^A-Za-z0-9]", data["password"] or ""):
             raise serializers.ValidationError(
                 {"password": "Password must contain at least 1 symbol (e.g. @, #, !)."}
@@ -76,7 +82,9 @@ class RegisterSerializer(serializers.ModelSerializer):
         joining_date = data.get("joining_date") or today
 
         if joining_date > today:
-            raise serializers.ValidationError({"joining_date": "Joining date cannot be in the future"})
+            raise serializers.ValidationError(
+                {"joining_date": "Joining date cannot be in the future"}
+            )
 
         data["joining_date"] = joining_date
 
@@ -166,7 +174,9 @@ class ResetPasswordSerializer(serializers.Serializer):
         if not pwd or not cpwd:
             raise serializers.ValidationError("Password is required")
         if pwd != cpwd:
-            raise serializers.ValidationError({"newPasswordConfirm": "Passwords do not match"})
+            raise serializers.ValidationError(
+                {"newPasswordConfirm": "Passwords do not match"}
+            )
 
         validate_password(pwd)
         return data

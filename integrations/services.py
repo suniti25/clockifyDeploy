@@ -54,16 +54,27 @@ def _build_credentials(cred: GoogleCalendarCredential):
 
 def _event_payload(leave: LeaveRequest) -> dict:
     employee = leave.employee
-    name = getattr(employee, "name", "") or (getattr(employee.user, "get_full_name", lambda: "")() if employee and employee.user else "")
+    name = getattr(employee, "name", "") or (
+        getattr(employee.user, "get_full_name", lambda: "")()
+        if employee and employee.user
+        else ""
+    )
     if not name:
-        name = getattr(employee.user, "username", "") if employee and employee.user else "Unknown"
+        name = (
+            getattr(employee.user, "username", "")
+            if employee and employee.user
+            else "Unknown"
+        )
 
     start_date = leave.start_date
     end_date_exclusive = (leave.end_date or leave.start_date) + timedelta(days=1)
 
     session = (leave.session or "FULL").strip().upper()
 
-    description_parts = [f"Employee: {name}", f"Leave Type: {(leave.leave_type or '').strip().upper()}"]
+    description_parts = [
+        f"Employee: {name}",
+        f"Leave Type: {(leave.leave_type or '').strip().upper()}",
+    ]
     if session in ("AM", "PM"):
         description_parts.append(f"Session: {session}")
     if leave.reason:
@@ -81,7 +92,9 @@ def _event_payload(leave: LeaveRequest) -> dict:
 
 def sync_approved_leave_to_google(leave: LeaveRequest, user=None) -> bool:
     if not leave or (leave.status or "").strip().upper() != "APPROVED":
-        logger.info("Skip Google sync: leave not approved (id=%s)", getattr(leave, "id", None))
+        logger.info(
+            "Skip Google sync: leave not approved (id=%s)", getattr(leave, "id", None)
+        )
         return False
 
     owner_user = None
@@ -107,15 +120,20 @@ def sync_approved_leave_to_google(leave: LeaveRequest, user=None) -> bool:
         return False
 
     from datetime import timedelta
+
     try:
         service = build("calendar", "v3", credentials=creds, cache_discovery=False)
 
         old_event_ids = []
         if leave.google_event_id:
-            old_event_ids = [eid for eid in leave.google_event_id.split(",") if eid.strip()]
+            old_event_ids = [
+                eid for eid in leave.google_event_id.split(",") if eid.strip()
+            ]
             for eid in old_event_ids:
                 try:
-                    service.events().delete(calendarId=cred.calendar_id, eventId=eid).execute()
+                    service.events().delete(
+                        calendarId=cred.calendar_id, eventId=eid
+                    ).execute()
                 except Exception as e:
                     logger.warning(f"Failed to delete old Google event {eid}: {e}")
             # Clear event id after deletion
@@ -126,17 +144,26 @@ def sync_approved_leave_to_google(leave: LeaveRequest, user=None) -> bool:
         start_date = leave.start_date
         end_date = leave.end_date
         days = (end_date - start_date).days + 1
-        leave_dates = [start_date + timedelta(days=i) for i in range(days) if (start_date + timedelta(days=i)).weekday() < 5]
+        leave_dates = [
+            start_date + timedelta(days=i)
+            for i in range(days)
+            if (start_date + timedelta(days=i)).weekday() < 5
+        ]
 
         created_event_ids = []
         for day in leave_dates:
             body = {
                 "summary": f"{(leave.leave_type or '').strip().title()} Leave - {getattr(leave.employee, 'name', 'Unknown')}",
-                "description": f"Employee: {getattr(leave.employee, 'name', 'Unknown')}\nLeave Type: {(leave.leave_type or '').strip().upper()}" + (f"\nReason: {leave.reason}" if leave.reason else ""),
+                "description": f"Employee: {getattr(leave.employee, 'name', 'Unknown')}\nLeave Type: {(leave.leave_type or '').strip().upper()}"
+                + (f"\nReason: {leave.reason}" if leave.reason else ""),
                 "start": {"date": day.isoformat()},
                 "end": {"date": (day + timedelta(days=1)).isoformat()},
             }
-            event = service.events().insert(calendarId=cred.calendar_id, body=body).execute()
+            event = (
+                service.events()
+                .insert(calendarId=cred.calendar_id, body=body)
+                .execute()
+            )
             event_id = (event or {}).get("id")
             if event_id:
                 created_event_ids.append(event_id)
