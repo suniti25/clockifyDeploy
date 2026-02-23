@@ -6,22 +6,26 @@ from datetime import date
 from django.db import transaction
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
+
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from form_app.models import LeaveRequest
+from drf_spectacular.utils import extend_schema
+from drf_spectacular.types import OpenApiTypes
+
+from discord_app.services import send_leave_request_to_admin
 from form_app.helpers import (
-    validate_leave_application_inputs,
     compute_leave_days_for_payload,
     compute_paid_status,
     compute_paid_unpaid_split,
     compute_paid_unpaid_split_for_request,
     display_is_paid,
+    validate_leave_application_inputs,
 )
+from form_app.models import LeaveRequest
 from user_app.helpers import _get_profile_and_employee
-from discord_app.services import send_leave_request_to_admin
 
 logger = logging.getLogger(__name__)
 
@@ -37,15 +41,25 @@ def _parse_iso_date(value, field_name: str):
         try:
             return date.fromisoformat(value), None
         except ValueError:
-            return None, Response({"error": f"Invalid {field_name}. Use YYYY-MM-DD."}, status=status.HTTP_400_BAD_REQUEST)
+            return None, Response(
+                {"error": f"Invalid {field_name}. Use YYYY-MM-DD."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-    return None, Response({"error": f"Invalid {field_name}. Use YYYY-MM-DD."}, status=status.HTTP_400_BAD_REQUEST)
+    return None, Response(
+        {"error": f"Invalid {field_name}. Use YYYY-MM-DD."},
+        status=status.HTTP_400_BAD_REQUEST,
+    )
 
 
+@extend_schema(
+    description="Apply a leave request (creates a PENDING request and notifies admin via Discord).",
+    request=OpenApiTypes.OBJECT,
+    responses={201: OpenApiTypes.OBJECT, 400: OpenApiTypes.OBJECT, 401: OpenApiTypes.OBJECT},
+)
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def apply_leave(request):
-
     profile, employee, err = _get_profile_and_employee(request)
     if err:
         return err
@@ -57,7 +71,6 @@ def apply_leave(request):
     leave_type = data.get("leave_type")
     reason = data.get("reason", "") or ""
 
-    # single session only
     session = data.get("session") or data.get("half_day") or "FULL"
 
     start_date, resp = _parse_iso_date(start_date_val, "start_date")
@@ -138,13 +151,13 @@ def apply_leave(request):
     )
 
 
+@extend_schema(
+    description="Get current user's leave requests (latest first).",
+    responses={200: OpenApiTypes.OBJECT},
+)
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def get_requests(request):
-    """
-    GET /api/form/requests/
-    Returns current user's leave requests (latest first)
-    """
     _, employee, err = _get_profile_and_employee(request)
     if err:
         return Response([], status=status.HTTP_200_OK)
@@ -176,6 +189,21 @@ def get_requests(request):
 
     return Response(results, status=status.HTTP_200_OK)
 
+
+@extend_schema(
+    description=(
+        "Update a leave by request body. "
+        "If original is PENDING -> updates it, else creates a new PENDING re-apply linked to original."
+    ),
+    request=OpenApiTypes.OBJECT,
+    responses={
+        200: OpenApiTypes.OBJECT,
+        201: OpenApiTypes.OBJECT,
+        400: OpenApiTypes.OBJECT,
+        401: OpenApiTypes.OBJECT,
+        404: OpenApiTypes.OBJECT,
+    },
+)
 @api_view(["PUT", "PATCH"])
 @permission_classes([IsAuthenticated])
 def update_leave_by_body(request):
@@ -194,10 +222,7 @@ def update_leave_by_body(request):
 
     original = get_object_or_404(LeaveRequest, id=leave_id, employee=employee)
     if original.status == LeaveRequest.STATUS_VOIDED:
-        return Response(
-            {"error": "Voided leave requests cannot be updated"},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+        return Response({"error": "Voided leave requests cannot be updated"}, status=status.HTTP_400_BAD_REQUEST)
 
     start_date_val = payload.get("start_date", original.start_date)
     end_date_val = payload.get("end_date", original.end_date)
@@ -223,7 +248,6 @@ def update_leave_by_body(request):
         instance_id=original.id,
     )
 
-    # CASE 1: PENDING -> UPDATE
     if original.status == "PENDING":
         original.start_date = start_date
         original.end_date = end_date
@@ -260,6 +284,7 @@ def update_leave_by_body(request):
 
         try:
             from discord_app.services import update_admin_leave_message
+
             update_admin_leave_message(original)
         except Exception:
             logger.exception("Failed updating Discord message for leave_id=%s", original.id)
@@ -274,9 +299,6 @@ def update_leave_by_body(request):
             },
             status=status.HTTP_200_OK,
         )
-
-
-    # CASE 2: APPROVED/REJECTED -> REAPPLY (create new)
 
     new_payload = {
         "leave_type": normalized_leave_type,
@@ -306,7 +328,6 @@ def update_leave_by_body(request):
     with transaction.atomic():
         new_lr = LeaveRequest.objects.create(employee=employee, **new_payload)
 
-        # link reapply history
         if hasattr(new_lr, "reapplied_from"):
             new_lr.reapplied_from = original
             new_lr.save(update_fields=["reapplied_from"])
@@ -332,4 +353,3 @@ def update_leave_by_body(request):
         },
         status=status.HTTP_201_CREATED,
     )
-

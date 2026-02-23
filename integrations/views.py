@@ -92,6 +92,7 @@ def google_callback(request):
             msg = f"{msg}. {oauth_error_description}"
         return HttpResponseBadRequest(msg)
 
+    #query parameters from Google OAuth callback
     code = request.GET.get("code")
     state = request.GET.get("state")
 

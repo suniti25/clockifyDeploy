@@ -1,5 +1,9 @@
-from datetime import timedelta
+from __future__ import annotations
+
+import logging
 import secrets
+from datetime import timedelta
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from django.conf import settings
 from django.contrib.auth.models import User
@@ -7,26 +11,29 @@ from django.core.mail import send_mail
 from django.db import transaction
 from django.utils import timezone
 
-from rest_framework.views import APIView
-from rest_framework.response import Response
 from rest_framework import status
-from rest_framework.permissions import AllowAny, IsAuthenticated
-from rest_framework_simplejwt.tokens import RefreshToken
-from rest_framework_simplejwt.exceptions import TokenError
-
 from rest_framework.authentication import SessionAuthentication
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
+from rest_framework_simplejwt.exceptions import TokenError
+from rest_framework_simplejwt.tokens import RefreshToken
+
+from drf_spectacular.utils import extend_schema
+from drf_spectacular.types import OpenApiTypes
 
 from user_app.models import Profile
 
 from .models import PasswordResetToken
-
 from .serializers import (
+    ForgotPasswordSerializer,
     LoginSerializer,
     RegisterSerializer,
-    UpdateEmailSerializer,
-    ForgotPasswordSerializer,
     ResetPasswordSerializer,
+    UpdateEmailSerializer,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class CsrfExemptSessionAuthentication(SessionAuthentication):
@@ -36,29 +43,33 @@ class CsrfExemptSessionAuthentication(SessionAuthentication):
 
 class LoginView(APIView):
     permission_classes = [AllowAny]
+
+    @extend_schema(
+        description="Login and return access token. Refresh token is set in an HTTP-only cookie.",
+        request=LoginSerializer,
+        responses={200: OpenApiTypes.OBJECT, 400: OpenApiTypes.OBJECT},
+    )
     def post(self, request):
-        serializer = LoginSerializer(data=request.data)
+        ser = LoginSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
 
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-        user = serializer.validated_data["user"]
+        user = ser.validated_data["user"]
         refresh = RefreshToken.for_user(user)
 
         profile = Profile.objects.filter(user=user).select_related("employee").first()
 
-        # Response body with access token and user details
         resp = Response(
             {
                 "access": str(refresh.access_token),
                 "username": user.username,
                 "role": profile.role if profile else None,
-                "employee_id": profile.employee_id if (profile and profile.employee_id) else None,
+                "employee_id": profile.employee_id
+                if (profile and profile.employee_id)
+                else None,
             },
             status=status.HTTP_200_OK,
         )
 
-        #  Set refresh token as HTTP-only cookie
         resp.set_cookie(
             "refresh_token",
             str(refresh),
@@ -68,15 +79,23 @@ class LoginView(APIView):
             max_age=60 * 60 * 24 * 30,  # 30 days
             path="/",
         )
-
         return resp
 
 
 class SetRefreshCookieView(APIView):
     permission_classes = [AllowAny]
+
+    @extend_schema(
+        description="Set refresh token cookie from a provided refresh token string.",
+        request=OpenApiTypes.OBJECT,
+        responses={
+            200: OpenApiTypes.OBJECT,
+            400: OpenApiTypes.OBJECT,
+            401: OpenApiTypes.OBJECT,
+        },
+    )
     def post(self, request):
         refresh_token = request.data.get("refresh")
-
         if not refresh_token:
             return Response(
                 {"detail": "No refresh token provided"},
@@ -87,8 +106,7 @@ class SetRefreshCookieView(APIView):
             refresh = RefreshToken(refresh_token)
         except TokenError:
             return Response(
-                {"detail": "Invalid refresh token"},
-                status=status.HTTP_401_UNAUTHORIZED,
+                {"detail": "Invalid refresh token"}, status=status.HTTP_401_UNAUTHORIZED
             )
 
         resp = Response({"detail": "Refresh cookie set"}, status=status.HTTP_200_OK)
@@ -105,13 +123,17 @@ class SetRefreshCookieView(APIView):
 
 class RegisterView(APIView):
     permission_classes = [AllowAny]
+
+    @extend_schema(
+        description="Register a new user.",
+        request=RegisterSerializer,
+        responses={201: OpenApiTypes.OBJECT, 400: OpenApiTypes.OBJECT},
+    )
     def post(self, request):
-        serializer = RegisterSerializer(data=request.data)
+        ser = RegisterSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
 
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-        user = serializer.save()
+        user = ser.save()
 
         return Response(
             {
@@ -133,45 +155,49 @@ class RegisterView(APIView):
 class UpdateEmailView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        description="Update logged-in user's email.",
+        request=UpdateEmailSerializer,
+        responses={200: OpenApiTypes.OBJECT, 400: OpenApiTypes.OBJECT},
+    )
     def post(self, request):
         return self.patch(request)
 
+    @extend_schema(
+        description="Update logged-in user's email (PATCH).",
+        request=UpdateEmailSerializer,
+        responses={200: OpenApiTypes.OBJECT, 400: OpenApiTypes.OBJECT},
+    )
     def patch(self, request):
-        serializer = UpdateEmailSerializer(
-            data=request.data,
-            context={"user": request.user},
-        )
-
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-        serializer.save()
+        ser = UpdateEmailSerializer(data=request.data, context={"user": request.user})
+        ser.is_valid(raise_exception=True)
+        ser.save()
 
         return Response(
-            {
-                "message": "Email updated successfully",
-                "email": request.user.email,
-            },
+            {"message": "Email updated successfully", "email": request.user.email},
             status=status.HTTP_200_OK,
         )
 
 
 class RefreshTokenView(APIView):
     permission_classes = [AllowAny]
+
+    @extend_schema(
+        description="Return a new access token using refresh_token cookie.",
+        responses={200: OpenApiTypes.OBJECT, 401: OpenApiTypes.OBJECT},
+    )
     def post(self, request):
         refresh_token = request.COOKIES.get("refresh_token")
-
         if not refresh_token:
             return Response(
-                {"detail": "Refresh token missing"},
-                status=status.HTTP_401_UNAUTHORIZED,
+                {"detail": "Refresh token missing"}, status=status.HTTP_401_UNAUTHORIZED
             )
 
         try:
             refresh = RefreshToken(refresh_token)
-            access = str(refresh.access_token)
-            return Response({"access": access}, status=status.HTTP_200_OK)
-
+            return Response(
+                {"access": str(refresh.access_token)}, status=status.HTTP_200_OK
+            )
         except TokenError:
             return Response(
                 {"detail": "Invalid or expired refresh token"},
@@ -181,13 +207,18 @@ class RefreshTokenView(APIView):
 
 class ForgotPasswordView(APIView):
     permission_classes = [AllowAny]
+
+    @extend_schema(
+        description="Request password reset email. Always returns generic success to avoid user enumeration.",
+        request=ForgotPasswordSerializer,
+        responses={200: OpenApiTypes.OBJECT},
+    )
     def post(self, request):
         ser = ForgotPasswordSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
 
         email = (ser.validated_data.get("email") or "").strip().lower()
 
-        # Always return generic success (avoid user enumeration)
         generic_resp = Response(
             {"detail": "If the email exists, we sent a reset link."},
             status=status.HTTP_200_OK,
@@ -204,8 +235,11 @@ class ForgotPasswordView(APIView):
         token_hash = PasswordResetToken.hash_raw_token(raw_token)
         expires_at = timezone.now() + timedelta(minutes=30)
 
-        # Best-effort cleanup to reduce clutter
-        PasswordResetToken.objects.filter(user=user, used_at__isnull=True, expires_at__lt=timezone.now()).delete()
+        PasswordResetToken.objects.filter(
+            user=user,
+            used_at__isnull=True,
+            expires_at__lt=timezone.now(),
+        ).delete()
 
         PasswordResetToken.objects.create(
             user=user,
@@ -215,15 +249,22 @@ class ForgotPasswordView(APIView):
 
         base = (getattr(settings, "FRONTEND_PASSWORD_RESET_URL", "") or "").strip()
         if base:
-            from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
-
             parts = urlsplit(base)
             query = dict(parse_qsl(parts.query, keep_blank_values=True))
             query["token"] = raw_token
-            reset_link = urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
+            reset_link = urlunsplit(
+                (
+                    parts.scheme,
+                    parts.netloc,
+                    parts.path,
+                    urlencode(query),
+                    parts.fragment,
+                )
+            )
         else:
-            # Fallback: uses current host (works in dev / when behind ngrok)
-            reset_link = request.build_absolute_uri(f"/reset-password?token={raw_token}")
+            reset_link = request.build_absolute_uri(
+                f"/reset-password?token={raw_token}"
+            )
 
         subject = "Reset your password"
         message = (
@@ -233,9 +274,15 @@ class ForgotPasswordView(APIView):
         )
 
         try:
-            send_mail(subject, message, settings.DEFAULT_FROM_EMAIL, [user.email], fail_silently=False)
+            send_mail(
+                subject,
+                message,
+                settings.DEFAULT_FROM_EMAIL,
+                [user.email],
+                fail_silently=False,
+            )
         except Exception:
-            # Don't leak email errors to caller
+            logger.exception("Password reset email send failed")
             return generic_resp
 
         return generic_resp
@@ -244,6 +291,11 @@ class ForgotPasswordView(APIView):
 class ResetPasswordView(APIView):
     permission_classes = [AllowAny]
 
+    @extend_schema(
+        description="Reset password using token + newPassword.",
+        request=ResetPasswordSerializer,
+        responses={200: OpenApiTypes.OBJECT, 400: OpenApiTypes.OBJECT},
+    )
     @transaction.atomic
     def post(self, request):
         ser = ResetPasswordSerializer(data=request.data)
@@ -273,4 +325,6 @@ class ResetPasswordView(APIView):
         prt.used_at = timezone.now()
         prt.save(update_fields=["used_at"])
 
-        return Response({"detail": "Password updated successfully"}, status=status.HTTP_200_OK)
+        return Response(
+            {"detail": "Password updated successfully"}, status=status.HTTP_200_OK
+        )

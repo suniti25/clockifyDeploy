@@ -4,7 +4,7 @@ from .models import Profile, Employee
 
 class EmployeeSerializer(serializers.ModelSerializer):
    
-    name = serializers.CharField(source="name", read_only=True)
+    name = serializers.CharField(source="user.get_full_name", read_only=True)
 
     class Meta:
         model = Employee
