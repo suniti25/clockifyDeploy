@@ -6,6 +6,7 @@ from django.utils import timezone
 from form_app.models import LeaveRequest
 from discord_app.services import send_daily_summary
 
+
 class Command(BaseCommand):
     help = "Send daily summary of approved leaves to Discord at 10:30 AM"
 
@@ -13,14 +14,11 @@ class Command(BaseCommand):
         today = timezone.localdate()
 
         # Fetch only leaves active today
-        approved_requests = (
-            LeaveRequest.objects.filter(
-                status="APPROVED",
-                start_date__lte=today,
-                end_date__gte=today,
-            )
-            .select_related("employee")
-        )
+        approved_requests = LeaveRequest.objects.filter(
+            status="APPROVED",
+            start_date__lte=today,
+            end_date__gte=today,
+        ).select_related("employee")
 
         leaves_by_date = defaultdict(list)
 

@@ -22,17 +22,21 @@ logger = logging.getLogger(__name__)
 def notify_leave_decision(*, leave_id: int) -> None:
     logger.debug("notify_leave_decision called for leave_id=%s", leave_id)
     try:
-        lr = (
-            LeaveRequest.objects.select_related("employee", "employee__user")
-            .get(id=leave_id)
+        lr = LeaveRequest.objects.select_related("employee", "employee__user").get(
+            id=leave_id
         )
     except LeaveRequest.DoesNotExist:
-        logger.debug("LeaveRequest %s does not exist in notify_leave_decision", leave_id)
+        logger.debug(
+            "LeaveRequest %s does not exist in notify_leave_decision", leave_id
+        )
         return
 
     # Best-effort admin daily summary
     try:
-        if lr.status == LeaveRequest.STATUS_APPROVED and timezone.localdate().weekday() not in (5, 6):
+        if (
+            lr.status == LeaveRequest.STATUS_APPROVED
+            and timezone.localdate().weekday() not in (5, 6)
+        ):
             send_admin_approved_today()
     except Exception:
         pass
@@ -97,7 +101,7 @@ def decide_leave(
             #  approval timestamp
             lr.approved_at = timezone.now()
 
-            #  reset daily notification flags 
+            #  reset daily notification flags
             lr.notified_admin_at = None
             lr.notified_employee_at = None
 
@@ -150,7 +154,16 @@ def decide_leave(
             lr.notified_admin_at = None
             lr.notified_employee_at = None
 
-            lr.save(update_fields=["status", "rejection_reason", "approval_reason", "approved_at", "notified_admin_at", "notified_employee_at"])
+            lr.save(
+                update_fields=[
+                    "status",
+                    "rejection_reason",
+                    "approval_reason",
+                    "approved_at",
+                    "notified_admin_at",
+                    "notified_employee_at",
+                ]
+            )
 
     if notify:
         notify_leave_decision(leave_id=lr.id)

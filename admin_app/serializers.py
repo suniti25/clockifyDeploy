@@ -10,7 +10,10 @@ from rest_framework import serializers
 
 from form_app.models import LeaveRequest, LeavePolicySettings
 from form_app.helpers import display_is_paid
-from form_app.policies import compute_probation_end_date, get_leave_year_range_for_employee
+from form_app.policies import (
+    compute_probation_end_date,
+    get_leave_year_range_for_employee,
+)
 from user_app.models import Employee, Profile
 from user_app.models import Project
 
@@ -20,6 +23,7 @@ from .helpers import (
     used_leaves_by_type,
     remaining_leaves,
 )
+
 
 class LeaveMiniSerializer(serializers.ModelSerializer):
     is_paid = serializers.SerializerMethodField()
@@ -94,9 +98,13 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
     last_name = serializers.CharField(required=False, allow_blank=True)
 
     password = serializers.CharField(write_only=True, required=False, allow_blank=True)
-    confirm_password = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    confirm_password = serializers.CharField(
+        write_only=True, required=False, allow_blank=True
+    )
 
-    current_project = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    current_project = serializers.CharField(
+        required=False, allow_blank=True, allow_null=True
+    )
     project_id = serializers.IntegerField(required=False)
     joining_date = serializers.DateField(required=False)
 
@@ -115,39 +123,61 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
         cpwd = (data.get("confirm_password") or "").strip()
         if pwd or cpwd:
             if pwd != cpwd:
-                raise serializers.ValidationError({"confirm_password": "Passwords do not match."})
+                raise serializers.ValidationError(
+                    {"confirm_password": "Passwords do not match."}
+                )
             if len(pwd) < 6:
-                raise serializers.ValidationError({"password": "Password must be at least 6 characters."})
+                raise serializers.ValidationError(
+                    {"password": "Password must be at least 6 characters."}
+                )
 
         if "username" in data:
             username = (data.get("username") or "").strip()
             if not username:
-                raise serializers.ValidationError({"username": "Username cannot be empty."})
+                raise serializers.ValidationError(
+                    {"username": "Username cannot be empty."}
+                )
             # Ensure uniqueness against all other users
-            if User.objects.filter(username__iexact=username).exclude(id=emp.user_id).exists():
-                raise serializers.ValidationError({"username": "Username already exists."})
+            if (
+                User.objects.filter(username__iexact=username)
+                .exclude(id=emp.user_id)
+                .exists()
+            ):
+                raise serializers.ValidationError(
+                    {"username": "Username already exists."}
+                )
             data["username"] = username
 
         joining_date = data.get("joining_date")
         if joining_date and joining_date > timezone.localdate():
-            raise serializers.ValidationError({"joining_date": "Joining date cannot be in the future."})
+            raise serializers.ValidationError(
+                {"joining_date": "Joining date cannot be in the future."}
+            )
 
         if "probation_end_date" in data and "probation_period_days" in data:
             raise serializers.ValidationError(
-                {"probation_period_days": "Provide either probation_end_date or probation_period_days, not both."}
+                {
+                    "probation_period_days": "Provide either probation_end_date or probation_period_days, not both."
+                }
             )
 
         if "project_id" in data and "current_project" in data:
             raise serializers.ValidationError(
-                {"project_id": "Provide either project_id or current_project, not both."}
+                {
+                    "project_id": "Provide either project_id or current_project, not both."
+                }
             )
 
         if "project_id" in data:
             project_id = data.get("project_id")
             if project_id is None:
-                raise serializers.ValidationError({"project_id": "project_id cannot be null."})
+                raise serializers.ValidationError(
+                    {"project_id": "project_id cannot be null."}
+                )
             if not Project.objects.filter(id=project_id, is_active=True).exists():
-                raise serializers.ValidationError({"project_id": "Project not found or inactive."})
+                raise serializers.ValidationError(
+                    {"project_id": "Project not found or inactive."}
+                )
 
         # Basic sanity if end date provided
         probation_end_date = data.get("probation_end_date")
@@ -155,7 +185,9 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
         if joining_date is not None and probation_end_date is not None:
             if probation_end_date < joining_date:
                 raise serializers.ValidationError(
-                    {"probation_end_date": "Probation end date cannot be before joining date."}
+                    {
+                        "probation_end_date": "Probation end date cannot be before joining date."
+                    }
                 )
 
         return data
@@ -163,7 +195,11 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
     @transaction.atomic
     def update_employee(self):
         data = self.validated_data
-        emp = Employee.objects.select_related("user").select_for_update().get(id=data["employee_id"])
+        emp = (
+            Employee.objects.select_related("user")
+            .select_for_update()
+            .get(id=data["employee_id"])
+        )
         user = emp.user
 
         # Update user fields
@@ -185,7 +221,7 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
             updates.append("current_project")
 
         if "current_project" in data:
-            emp.current_project = (data.get("current_project") or "")
+            emp.current_project = data.get("current_project") or ""
             updates.append("current_project")
 
         joining_date = data.get("joining_date", None)
@@ -198,7 +234,9 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
             # Validate against final joining_date (updated or existing)
             if ped is not None and ped < emp.joining_date:
                 raise serializers.ValidationError(
-                    {"probation_end_date": "Probation end date cannot be before joining date."}
+                    {
+                        "probation_end_date": "Probation end date cannot be before joining date."
+                    }
                 )
             emp.probation_end_date = ped
             updates.append("probation_end_date")
@@ -210,7 +248,11 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
             updates.append("probation_end_date")
 
         # If joining_date changed and probation wasn't explicitly provided, keep existing behavior
-        if joining_date is not None and "probation_end_date" not in data and "probation_period_days" not in data:
+        if (
+            joining_date is not None
+            and "probation_end_date" not in data
+            and "probation_period_days" not in data
+        ):
             emp.probation_end_date = compute_probation_end_date(emp.joining_date)
             if "probation_end_date" not in updates:
                 updates.append("probation_end_date")
@@ -257,7 +299,7 @@ class AllUsersDetailSerializer(serializers.ModelSerializer):
     joining_date = serializers.SerializerMethodField()
     last_request_sent = serializers.SerializerMethodField()
     is_on_probation = serializers.SerializerMethodField()
-    
+
     total_leave_this_year = serializers.SerializerMethodField()
     leaves = serializers.SerializerMethodField()
     remaining_leaves = serializers.SerializerMethodField()
@@ -285,7 +327,6 @@ class AllUsersDetailSerializer(serializers.ModelSerializer):
             "remaining_leaves",
             "recent_leaves",
         ]
-
 
     # profile/user info
 
@@ -331,7 +372,7 @@ class AllUsersDetailSerializer(serializers.ModelSerializer):
         return LeaveMiniSerializer(leaves, many=True).data
 
     # Totals / used / remaining
-   
+
     def get_total_leave_this_year(self, obj):
         emp = getattr(obj, "employee", None)
         leaves = get_employee_leaves(emp) if emp else []
@@ -348,11 +389,10 @@ class AllUsersDetailSerializer(serializers.ModelSerializer):
         return remaining_leaves(emp, leaves=leaves) if emp else {}
 
 
-
 # Create / Update users
 
+
 class AdminUserCreateSerializer(serializers.Serializer):
- 
     username = serializers.CharField()
     email = serializers.EmailField(required=False, allow_blank=True, allow_null=True)
     first_name = serializers.CharField(required=False, allow_blank=True)
@@ -365,7 +405,9 @@ class AdminUserCreateSerializer(serializers.Serializer):
 
     reset_leave_balance = serializers.BooleanField(required=False)
 
-    current_project = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    current_project = serializers.CharField(
+        required=False, allow_blank=True, allow_null=True
+    )
 
     def validate(self, data: dict[str, Any]):
         username = (data.get("username") or "").strip()
@@ -386,13 +428,19 @@ class AdminUserCreateSerializer(serializers.Serializer):
         pwd = (data.get("password") or "").strip()
         cpwd = (data.get("confirm_password") or "").strip()
         if pwd != cpwd:
-            raise serializers.ValidationError({"confirm_password": "Passwords do not match."})
+            raise serializers.ValidationError(
+                {"confirm_password": "Passwords do not match."}
+            )
         if len(pwd) < 6:
-            raise serializers.ValidationError({"password": "Password must be at least 6 characters."})
+            raise serializers.ValidationError(
+                {"password": "Password must be at least 6 characters."}
+            )
 
         joining_date = data.get("joining_date")
         if joining_date and joining_date > timezone.localdate():
-            raise serializers.ValidationError({"joining_date": "Joining date cannot be in the future."})
+            raise serializers.ValidationError(
+                {"joining_date": "Joining date cannot be in the future."}
+            )
 
         return data
 
@@ -422,7 +470,9 @@ class AdminUserCreateSerializer(serializers.Serializer):
                 "name": (user.get_full_name() or "").strip() or user.username,
                 "joining_date": joining_date,
                 "probation_end_date": compute_probation_end_date(joining_date),
-                "reset_leave_balance": bool(reset_leave_balance) if reset_leave_balance is not None else False,
+                "reset_leave_balance": bool(reset_leave_balance)
+                if reset_leave_balance is not None
+                else False,
                 "current_project": (current_project or ""),
             },
         )
@@ -435,7 +485,9 @@ class AdminUserCreateSerializer(serializers.Serializer):
                 employee.probation_end_date = compute_probation_end_date(joining_date)
                 updates.extend(["joining_date", "probation_end_date"])
 
-            if reset_leave_balance is not None and employee.reset_leave_balance != bool(reset_leave_balance):
+            if reset_leave_balance is not None and employee.reset_leave_balance != bool(
+                reset_leave_balance
+            ):
                 employee.reset_leave_balance = bool(reset_leave_balance)
                 updates.append("reset_leave_balance")
 
@@ -448,7 +500,9 @@ class AdminUserCreateSerializer(serializers.Serializer):
 
         if reset_leave_balance is None:
             today = timezone.localdate()
-            leave_year_start, _ = get_leave_year_range_for_employee(employee, on_date=today)
+            leave_year_start, _ = get_leave_year_range_for_employee(
+                employee, on_date=today
+            )
             if joining_date < leave_year_start and not employee.reset_leave_balance:
                 employee.reset_leave_balance = True
                 employee.save(update_fields=["reset_leave_balance"])
@@ -470,7 +524,6 @@ class AdminUserCreateSerializer(serializers.Serializer):
 
 
 class AdminUserUpdateSerializer(serializers.Serializer):
-
     user_id = serializers.IntegerField()
 
     username = serializers.CharField(required=False)
@@ -479,14 +532,18 @@ class AdminUserUpdateSerializer(serializers.Serializer):
     email = serializers.EmailField(required=False)
 
     password = serializers.CharField(write_only=True, required=False, allow_blank=True)
-    confirm_password = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    confirm_password = serializers.CharField(
+        write_only=True, required=False, allow_blank=True
+    )
 
     joining_date = serializers.DateField(required=False)
     is_on_probation = serializers.BooleanField(required=False)
 
     reset_leave_balance = serializers.BooleanField(required=False)
 
-    current_project = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    current_project = serializers.CharField(
+        required=False, allow_blank=True, allow_null=True
+    )
 
     def validate(self, data: dict[str, Any]):
         user_id = data["user_id"]
@@ -499,15 +556,25 @@ class AdminUserUpdateSerializer(serializers.Serializer):
         cpwd = (data.get("confirm_password") or "").strip()
         if pwd or cpwd:
             if pwd != cpwd:
-                raise serializers.ValidationError({"confirm_password": "Passwords do not match."})
+                raise serializers.ValidationError(
+                    {"confirm_password": "Passwords do not match."}
+                )
             if len(pwd) < 6:
-                raise serializers.ValidationError({"password": "Password must be at least 6 characters."})
+                raise serializers.ValidationError(
+                    {"password": "Password must be at least 6 characters."}
+                )
 
         if "email" in data:
             email = (data.get("email") or "").strip().lower()
             if email:
-                if User.objects.filter(email__iexact=email).exclude(id=user_id).exists():
-                    raise serializers.ValidationError({"email": "Email already exists."})
+                if (
+                    User.objects.filter(email__iexact=email)
+                    .exclude(id=user_id)
+                    .exists()
+                ):
+                    raise serializers.ValidationError(
+                        {"email": "Email already exists."}
+                    )
                 data["email"] = email
             else:
                 data["email"] = ""
@@ -515,21 +582,31 @@ class AdminUserUpdateSerializer(serializers.Serializer):
         if "username" in data:
             username = (data.get("username") or "").strip()
             if username:
-                if User.objects.filter(username__iexact=username).exclude(id=user_id).exists():
-                    raise serializers.ValidationError({"username": "Username already exists."})
+                if (
+                    User.objects.filter(username__iexact=username)
+                    .exclude(id=user_id)
+                    .exists()
+                ):
+                    raise serializers.ValidationError(
+                        {"username": "Username already exists."}
+                    )
                 data["username"] = username
             else:
-                raise serializers.ValidationError({"username": "Username cannot be empty."})
+                raise serializers.ValidationError(
+                    {"username": "Username cannot be empty."}
+                )
 
         joining_date = data.get("joining_date")
         if joining_date and joining_date > timezone.localdate():
-            raise serializers.ValidationError({"joining_date": "Joining date cannot be in the future."})
+            raise serializers.ValidationError(
+                {"joining_date": "Joining date cannot be in the future."}
+            )
 
         return data
 
     @transaction.atomic
     def update_user(self):
-    
+
         data = self.validated_data
         user = User.objects.select_for_update().get(id=data["user_id"])
 
@@ -560,7 +637,7 @@ class AdminUserUpdateSerializer(serializers.Serializer):
                 today = timezone.localdate()
                 desired = bool(data.get("is_on_probation"))
                 if desired:
-                    # Ensure probation_end_date is at least today 
+                    # Ensure probation_end_date is at least today
                     new_end = max(today, emp.joining_date)
                 else:
                     # Ensure not on probation by setting end date to before today.
@@ -571,7 +648,9 @@ class AdminUserUpdateSerializer(serializers.Serializer):
                     updates.append("probation_end_date")
 
             reset_leave_balance = data.get("reset_leave_balance", None)
-            if reset_leave_balance is not None and emp.reset_leave_balance != bool(reset_leave_balance):
+            if reset_leave_balance is not None and emp.reset_leave_balance != bool(
+                reset_leave_balance
+            ):
                 emp.reset_leave_balance = bool(reset_leave_balance)
                 updates.append("reset_leave_balance")
 
@@ -604,14 +683,18 @@ class LeavePolicySettingsSerializer(serializers.ModelSerializer):
         if value is None:
             return value
         if value < 0 or value > 100:
-            raise serializers.ValidationError("Carryover percentage must be between 0 and 100.")
+            raise serializers.ValidationError(
+                "Carryover percentage must be between 0 and 100."
+            )
         return value
 
     def validate_probation_period_days(self, value):
         if value is None:
             return value
         if value < 0:
-            raise serializers.ValidationError("Probation period days must be 0 or greater.")
+            raise serializers.ValidationError(
+                "Probation period days must be 0 or greater."
+            )
         return value
 
     def validate(self, data: dict[str, Any]):
@@ -623,7 +706,9 @@ class LeavePolicySettingsSerializer(serializers.ModelSerializer):
             "bereavement_days",
         ):
             if field in data and data[field] is not None and data[field] < 0:
-                raise serializers.ValidationError({field: "Value must be 0 or greater."})
+                raise serializers.ValidationError(
+                    {field: "Value must be 0 or greater."}
+                )
         return data
 
 

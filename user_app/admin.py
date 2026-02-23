@@ -63,7 +63,7 @@ class EmployeeAdmin(admin.ModelAdmin):
         "id",
         "user",
         "name",
-        "current_project",  
+        "current_project",
         "joining_date",
         "probation_end_date",
         "probation_check",
@@ -73,7 +73,7 @@ class EmployeeAdmin(admin.ModelAdmin):
         "user__first_name",
         "user__last_name",
         "name",
-        "current_project",  
+        "current_project",
     )
     list_filter = ("joining_date", "probation_end_date")
     ordering = ("-joining_date",)

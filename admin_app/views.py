@@ -73,7 +73,9 @@ class AdminProjectsView(APIView):
         if str(only_active).lower() in ("1", "true", "yes"):
             qs = qs.filter(is_active=True)
 
-        return Response(ProjectSerializer(qs, many=True).data, status=status.HTTP_200_OK)
+        return Response(
+            ProjectSerializer(qs, many=True).data, status=status.HTTP_200_OK
+        )
 
     @extend_schema(
         description="Create a project.",
@@ -111,16 +113,22 @@ class AdminProjectDeleteByBodyView(APIView):
     def post(self, request):
         project_id = request.data.get("project_id")
         if not project_id:
-            return Response({"error": "project_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"error": "project_id is required"}, status=status.HTTP_400_BAD_REQUEST
+            )
 
         from user_app.models import Project
 
         try:
             proj = Project.objects.select_for_update().get(id=int(project_id))
         except (ValueError, TypeError):
-            return Response({"error": "Invalid project_id"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"error": "Invalid project_id"}, status=status.HTTP_400_BAD_REQUEST
+            )
         except Project.DoesNotExist:
-            return Response({"error": "Project not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {"error": "Project not found"}, status=status.HTTP_404_NOT_FOUND
+            )
 
         proj.is_active = False
         proj.save(update_fields=["is_active"])
@@ -143,8 +151,18 @@ class AdminLeaveKPIView(APIView):
     @extend_schema(
         description="Get combined leave KPIs (supports month/year params used by the service).",
         parameters=[
-            OpenApiParameter(name="month", type=OpenApiTypes.INT, location=OpenApiParameter.QUERY, required=False),
-            OpenApiParameter(name="year", type=OpenApiTypes.INT, location=OpenApiParameter.QUERY, required=False),
+            OpenApiParameter(
+                name="month",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=False,
+            ),
+            OpenApiParameter(
+                name="year",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=False,
+            ),
         ],
         responses={
             200: OpenApiTypes.OBJECT,
@@ -159,8 +177,12 @@ class AdminLeaveKPIView(APIView):
                 {
                     "status": "success",
                     "data": {
-                        "sick_leave": sick_leave_kpi_for_current_month(year=year, month=month),
-                        "vacation_leave": vacation_leave_kpi_for_current_month(year=year, month=month),
+                        "sick_leave": sick_leave_kpi_for_current_month(
+                            year=year, month=month
+                        ),
+                        "vacation_leave": vacation_leave_kpi_for_current_month(
+                            year=year, month=month
+                        ),
                         "wfh": wfh_leave_kpi_for_current_month(year=year, month=month),
                         "leave_trends": leave_trends_for_year(year=year),
                     },
@@ -168,11 +190,18 @@ class AdminLeaveKPIView(APIView):
                 status=status.HTTP_200_OK,
             )
         except (TypeError, ValueError) as e:
-            return Response({"status": "error", "message": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"status": "error", "message": str(e)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         except Exception as e:
             logger.exception("Admin leave KPI combined failed")
             return Response(
-                {"status": "error", "message": "Failed to calculate leave KPIs", "detail": str(e)},
+                {
+                    "status": "error",
+                    "message": "Failed to calculate leave KPIs",
+                    "detail": str(e),
+                },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
@@ -186,13 +215,16 @@ class AllUsersDetailView(APIView):
     )
     def get(self, request):
         leaves_qs = LeaveRequest.objects.order_by("-applied_at", "-id")
-        users = (
-            User.objects.select_related("profile", "employee")
-            .prefetch_related(
-                Prefetch("employee__leave_requests", queryset=leaves_qs, to_attr="prefetched_leaves")
+        users = User.objects.select_related("profile", "employee").prefetch_related(
+            Prefetch(
+                "employee__leave_requests",
+                queryset=leaves_qs,
+                to_attr="prefetched_leaves",
             )
         )
-        return Response(AllUsersDetailSerializer(users, many=True).data, status=status.HTTP_200_OK)
+        return Response(
+            AllUsersDetailSerializer(users, many=True).data, status=status.HTTP_200_OK
+        )
 
 
 class UserDetailView(APIView):
@@ -206,11 +238,15 @@ class UserDetailView(APIView):
         try:
             user = User.objects.select_related("profile", "employee").get(id=user_id)
         except User.DoesNotExist:
-            return Response({"error": "User not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {"error": "User not found"}, status=status.HTTP_404_NOT_FOUND
+            )
 
         if getattr(user, "employee", None):
             user.employee.prefetched_leaves = list(
-                LeaveRequest.objects.filter(employee=user.employee).order_by("-applied_at", "-id")
+                LeaveRequest.objects.filter(employee=user.employee).order_by(
+                    "-applied_at", "-id"
+                )
             )
 
         return Response(AllUsersDetailSerializer(user).data, status=status.HTTP_200_OK)
@@ -229,7 +265,10 @@ class AllEmployeesDetailView(APIView):
             .exclude(user__is_staff=True)
             .exclude(user__is_superuser=True)
         )
-        return Response(EmployeeDetailSerializer(employees, many=True).data, status=status.HTTP_200_OK)
+        return Response(
+            EmployeeDetailSerializer(employees, many=True).data,
+            status=status.HTTP_200_OK,
+        )
 
 
 class EmployeesByRoleView(APIView):
@@ -245,10 +284,16 @@ class EmployeesByRoleView(APIView):
             User.objects.filter(profile__role="EMPLOYEE")
             .select_related("profile", "employee")
             .prefetch_related(
-                Prefetch("employee__leave_requests", queryset=leaves_qs, to_attr="prefetched_leaves")
+                Prefetch(
+                    "employee__leave_requests",
+                    queryset=leaves_qs,
+                    to_attr="prefetched_leaves",
+                )
             )
         )
-        return Response(AllUsersDetailSerializer(users, many=True).data, status=status.HTTP_200_OK)
+        return Response(
+            AllUsersDetailSerializer(users, many=True).data, status=status.HTTP_200_OK
+        )
 
 
 class AdminEmployeeDetailUpdateView(APIView):
@@ -262,14 +307,20 @@ class AdminEmployeeDetailUpdateView(APIView):
         try:
             emp = Employee.objects.select_related("user").get(id=employee_id)
         except Employee.DoesNotExist:
-            return Response({"error": "Employee not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {"error": "Employee not found"}, status=status.HTTP_404_NOT_FOUND
+            )
 
         return Response(EmployeeDetailSerializer(emp).data, status=status.HTTP_200_OK)
 
     @extend_schema(
         description="Update employee by employee_id (PATCH).",
         request=AdminEmployeeUpdateSerializer,
-        responses={200: OpenApiTypes.OBJECT, 400: OpenApiTypes.OBJECT, 404: OpenApiTypes.OBJECT},
+        responses={
+            200: OpenApiTypes.OBJECT,
+            400: OpenApiTypes.OBJECT,
+            404: OpenApiTypes.OBJECT,
+        },
     )
     @transaction.atomic
     def patch(self, request, employee_id: int):
@@ -340,11 +391,36 @@ class AdminAllRequestsView(APIView):
     @extend_schema(
         description="List all leave requests for admin with paging and filters.",
         parameters=[
-            OpenApiParameter(name="page", type=OpenApiTypes.INT, location=OpenApiParameter.QUERY, required=False),
-            OpenApiParameter(name="page_size", type=OpenApiTypes.INT, location=OpenApiParameter.QUERY, required=False),
-            OpenApiParameter(name="pageSize", type=OpenApiTypes.INT, location=OpenApiParameter.QUERY, required=False),
-            OpenApiParameter(name="per_page", type=OpenApiTypes.INT, location=OpenApiParameter.QUERY, required=False),
-            OpenApiParameter(name="limit", type=OpenApiTypes.INT, location=OpenApiParameter.QUERY, required=False),
+            OpenApiParameter(
+                name="page",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=False,
+            ),
+            OpenApiParameter(
+                name="page_size",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=False,
+            ),
+            OpenApiParameter(
+                name="pageSize",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=False,
+            ),
+            OpenApiParameter(
+                name="per_page",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=False,
+            ),
+            OpenApiParameter(
+                name="limit",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=False,
+            ),
         ],
         responses={200: OpenApiTypes.OBJECT},
     )
@@ -362,8 +438,12 @@ class AdminAllRequestsView(APIView):
                     return default
             return default
 
-        page = _first_present_int(("page", "current_page", "currentPage", "pageNumber"), 1)
-        page_size = _first_present_int(("page_size", "pageSize", "per_page", "perPage", "limit"), 10)
+        page = _first_present_int(
+            ("page", "current_page", "currentPage", "pageNumber"), 1
+        )
+        page_size = _first_present_int(
+            ("page_size", "pageSize", "per_page", "perPage", "limit"), 10
+        )
 
         page = max(page, 1)
         page_size = min(max(page_size, 1), 50)
@@ -406,19 +486,25 @@ class AdminPendingRequestsView(APIView):
     )
     def get(self, request):
         params = request.GET
-        base_qs = AdminRequestServices.unfiltered_queryset().order_by("-applied_at", "-id")
+        base_qs = AdminRequestServices.unfiltered_queryset().order_by(
+            "-applied_at", "-id"
+        )
 
         recent_qs = base_qs[:7]
         recent_requests = [serialize_request_for_frontend(lr) for lr in recent_qs]
 
-        pending_qs = base_qs.annotate(_s=_norm_status_expr("status")).filter(_s=LeaveRequest.STATUS_PENDING)
+        pending_qs = base_qs.annotate(_s=_norm_status_expr("status")).filter(
+            _s=LeaveRequest.STATUS_PENDING
+        )
 
         pending_total = pending_qs.count()
         pending_requests = [serialize_request_for_frontend(lr) for lr in pending_qs]
 
         today = timezone.localdate()
         summary = {
-            "team_members": Profile.objects.filter(role="EMPLOYEE", user__employee__isnull=False).count(),
+            "team_members": Profile.objects.filter(
+                role="EMPLOYEE", user__employee__isnull=False
+            ).count(),
             "pending_requests": (
                 LeaveRequest.objects.annotate(_s=_norm_status_expr("status"))
                 .filter(_s=LeaveRequest.STATUS_PENDING)
@@ -482,7 +568,11 @@ class AdminUserUpdateView(APIView):
     @extend_schema(
         description="Update a user (admin) by body (PATCH).",
         request=AdminUserUpdateSerializer,
-        responses={200: OpenApiTypes.OBJECT, 400: OpenApiTypes.OBJECT, 404: OpenApiTypes.OBJECT},
+        responses={
+            200: OpenApiTypes.OBJECT,
+            400: OpenApiTypes.OBJECT,
+            404: OpenApiTypes.OBJECT,
+        },
     )
     @transaction.atomic
     def patch(self, request):
@@ -497,7 +587,9 @@ class AdminUserUpdateView(APIView):
             try:
                 user = User.objects.select_related("employee").get(id=user_id)
             except User.DoesNotExist:
-                return Response({"error": "User not found"}, status=status.HTTP_404_NOT_FOUND)
+                return Response(
+                    {"error": "User not found"}, status=status.HTTP_404_NOT_FOUND
+                )
 
             data = ser.validated_data
             for field in ("username", "first_name", "last_name", "email"):
@@ -529,7 +621,8 @@ class AdminUserUpdateView(APIView):
                     "last_name": user.last_name,
                     "on_probation": (
                         user.employee.is_on_probation()
-                        if getattr(user, "employee", None) and callable(getattr(user.employee, "is_on_probation", None))
+                        if getattr(user, "employee", None)
+                        and callable(getattr(user.employee, "is_on_probation", None))
                         else None
                     ),
                 },
@@ -557,12 +650,16 @@ class AdminUserDeleteByBodyView(APIView):
         try:
             user_id = request.data.get("user_id")
             if not user_id:
-                return Response({"error": "user_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+                return Response(
+                    {"error": "user_id is required"}, status=status.HTTP_400_BAD_REQUEST
+                )
 
             try:
                 user = User.objects.select_for_update().get(id=int(user_id))
             except (User.DoesNotExist, ValueError, TypeError):
-                return Response({"error": "User not found"}, status=status.HTTP_404_NOT_FOUND)
+                return Response(
+                    {"error": "User not found"}, status=status.HTTP_404_NOT_FOUND
+                )
 
             if request.user and user.id == request.user.id:
                 return Response(
@@ -624,7 +721,9 @@ class LeavePolicySettingsView(APIView):
     )
     def get(self, request):
         settings_obj = get_leave_policy_settings()
-        return Response(LeavePolicySettingsSerializer(settings_obj).data, status=status.HTTP_200_OK)
+        return Response(
+            LeavePolicySettingsSerializer(settings_obj).data, status=status.HTTP_200_OK
+        )
 
     @extend_schema(
         description="Update leave policy settings (partial).",
@@ -633,7 +732,9 @@ class LeavePolicySettingsView(APIView):
     )
     def patch(self, request):
         settings_obj = get_leave_policy_settings()
-        ser = LeavePolicySettingsSerializer(settings_obj, data=request.data, partial=True)
+        ser = LeavePolicySettingsSerializer(
+            settings_obj, data=request.data, partial=True
+        )
         ser.is_valid(raise_exception=True)
         ser.save()
         return Response(ser.data, status=status.HTTP_200_OK)
@@ -656,7 +757,10 @@ class EmployeeRenewalScheduleView(APIView):
         for emp in employees:
             emp.next_renewal_date = get_next_renewal_date(emp)
 
-        return Response(EmployeeRenewalScheduleSerializer(employees, many=True).data, status=status.HTTP_200_OK)
+        return Response(
+            EmployeeRenewalScheduleSerializer(employees, many=True).data,
+            status=status.HTTP_200_OK,
+        )
 
     @extend_schema(
         description="Override an employee renewal date.",
@@ -675,7 +779,9 @@ class EmployeeRenewalScheduleView(APIView):
         emp.save(update_fields=["leave_renewal_date_override"])
 
         emp.next_renewal_date = get_next_renewal_date(emp)
-        return Response(EmployeeRenewalScheduleSerializer(emp).data, status=status.HTTP_200_OK)
+        return Response(
+            EmployeeRenewalScheduleSerializer(emp).data, status=status.HTTP_200_OK
+        )
 
 
 class ApproveLeaveByBodyView(APIView):
@@ -684,7 +790,11 @@ class ApproveLeaveByBodyView(APIView):
     @extend_schema(
         description="Approve leave by formID (or form_id) in request body.",
         request=OpenApiTypes.OBJECT,
-        responses={200: OpenApiTypes.OBJECT, 400: OpenApiTypes.OBJECT, 404: OpenApiTypes.OBJECT},
+        responses={
+            200: OpenApiTypes.OBJECT,
+            400: OpenApiTypes.OBJECT,
+            404: OpenApiTypes.OBJECT,
+        },
     )
     @transaction.atomic
     def post(self, request):
@@ -692,7 +802,9 @@ class ApproveLeaveByBodyView(APIView):
         message = (request.data.get("message") or "").strip() or None
 
         if not form_id:
-            return Response({"error": "formID is required"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"error": "formID is required"}, status=status.HTTP_400_BAD_REQUEST
+            )
 
         try:
             lr = decide_leave(
@@ -701,9 +813,13 @@ class ApproveLeaveByBodyView(APIView):
                 message=message,
             )
         except (ValueError, TypeError):
-            return Response({"error": "Invalid formID"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"error": "Invalid formID"}, status=status.HTTP_400_BAD_REQUEST
+            )
         except LeaveRequest.DoesNotExist:
-            return Response({"error": "Leave request not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {"error": "Leave request not found"}, status=status.HTTP_404_NOT_FOUND
+            )
 
         lr.refresh_from_db()
         return Response(
@@ -723,7 +839,11 @@ class RejectLeaveByBodyView(APIView):
     @extend_schema(
         description="Reject leave by formID (or form_id) in request body.",
         request=OpenApiTypes.OBJECT,
-        responses={200: OpenApiTypes.OBJECT, 400: OpenApiTypes.OBJECT, 404: OpenApiTypes.OBJECT},
+        responses={
+            200: OpenApiTypes.OBJECT,
+            400: OpenApiTypes.OBJECT,
+            404: OpenApiTypes.OBJECT,
+        },
     )
     @transaction.atomic
     def post(self, request):
@@ -731,7 +851,9 @@ class RejectLeaveByBodyView(APIView):
         message = (request.data.get("message") or "").strip()
 
         if not form_id:
-            return Response({"error": "formID is required"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"error": "formID is required"}, status=status.HTTP_400_BAD_REQUEST
+            )
 
         try:
             lr = decide_leave(
@@ -740,9 +862,13 @@ class RejectLeaveByBodyView(APIView):
                 message=message,
             )
         except (ValueError, TypeError):
-            return Response({"error": "Invalid formID"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"error": "Invalid formID"}, status=status.HTTP_400_BAD_REQUEST
+            )
         except LeaveRequest.DoesNotExist:
-            return Response({"error": "Leave request not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {"error": "Leave request not found"}, status=status.HTTP_404_NOT_FOUND
+            )
 
         lr.refresh_from_db()
         return Response(

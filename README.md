@@ -7,7 +7,7 @@
    ```bash
    git clone https://github.com/Avinto-IT/leave-management-system-backend.git
    cd leave-management-system-backend
-   
+
 2. **Create virtual environment**:
    ```bash
    python -m venv .venv
@@ -20,7 +20,7 @@
 4. **Set up environment variables**:
    - Create a .env file in the project root:
    - You can find the sample of .env file in the env.example file in the project root.
-     
+
    ```bash
    # Example
     SECRET_KEY=your-secret-key
@@ -41,5 +41,5 @@
 8. **Run the server**:
    ```bash
    python manage.py runserver
-   
+
 9. Open in browser at: http://127.0.0.1:8000

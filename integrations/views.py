@@ -48,7 +48,9 @@ def google_connect(request):
 
     # Guardrail: redirect_uri must be the callback URL (Google will redirect there with ?code=...)
     # If this is misconfigured (e.g. points to /connect/), OAuth will loop or the callback will never get a code.
-    expected_callback = request.build_absolute_uri(reverse("integrations_google_callback"))
+    expected_callback = request.build_absolute_uri(
+        reverse("integrations_google_callback")
+    )
     configured = settings.GOOGLE_OAUTH_REDIRECT_URI.strip()
     if configured.rstrip("/") != expected_callback.rstrip("/"):
         return HttpResponseBadRequest(
@@ -73,11 +75,10 @@ def google_connect(request):
     return redirect(auth_url)
 
 
-
 @login_required
 def google_callback(request):
     """
-   Google redirects here,token and save refresh token in DB.
+    Google redirects here,token and save refresh token in DB.
     """
     if not _is_admin_user(request.user):
         return HttpResponseForbidden("Admin access required.")
@@ -92,7 +93,7 @@ def google_callback(request):
             msg = f"{msg}. {oauth_error_description}"
         return HttpResponseBadRequest(msg)
 
-    #query parameters from Google OAuth callback
+    # query parameters from Google OAuth callback
     code = request.GET.get("code")
     state = request.GET.get("state")
 

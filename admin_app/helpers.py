@@ -19,6 +19,7 @@ SESSION_MAP = {
     "PM": "EVENING",
 }
 
+
 # Small utilities
 def _strip(x) -> str:
     return (x or "").strip()
@@ -32,7 +33,7 @@ def _parse_int(x: str) -> Optional[int]:
 
 
 def _parse_bool(x) -> Optional[bool]:
- 
+
     if x is None:
         return None
     v = _strip(str(x)).lower()
@@ -65,10 +66,15 @@ def _month_window(year: int, month: int) -> tuple[date, date]:
     return date(year, month, 1), date(year, month, last)
 
 
-# Filters 
+# Filters
+
 
 def apply_request_filters(qs, params):
-    name = _strip(params.get("name")) or _strip(params.get("search")) or _strip(params.get("q"))
+    name = (
+        _strip(params.get("name"))
+        or _strip(params.get("search"))
+        or _strip(params.get("q"))
+    )
 
     month_raw = _strip(params.get("month"))
     year_raw = _strip(params.get("year"))
@@ -87,7 +93,7 @@ def apply_request_filters(qs, params):
     if _looks_like_sort_dir(status_val):
         status_val = ""
 
-    # year-only filter 
+    # year-only filter
     if year_raw and not month_raw:
         year = _parse_int(year_raw)
         if year is None or year < 1900 or year > 3000:
@@ -97,7 +103,7 @@ def apply_request_filters(qs, params):
         y_end = date(year, 12, 31)
         qs = qs.filter(start_date__lte=y_end, end_date__gte=y_start)
 
-    # month/year filter 
+    # month/year filter
     if month_raw:
         month = None
         year = None
@@ -132,12 +138,16 @@ def apply_request_filters(qs, params):
             LeaveRequest.STATUS_REJECTED,
             LeaveRequest.STATUS_VOIDED,
         }:
-            qs = qs.annotate(_status_norm=_norm_status_expr("status")).filter(_status_norm=wanted)
+            qs = qs.annotate(_status_norm=_norm_status_expr("status")).filter(
+                _status_norm=wanted
+            )
 
     # leave type filter
     if leave_type:
         wanted_type = leave_type.strip().upper()
-        allowed_types = {str(v).strip().upper() for (v, _label) in LeaveRequest.LEAVE_TYPE_CHOICES}
+        allowed_types = {
+            str(v).strip().upper() for (v, _label) in LeaveRequest.LEAVE_TYPE_CHOICES
+        }
         if wanted_type in allowed_types:
             qs = qs.filter(leave_type__iexact=wanted_type)
 
@@ -157,6 +167,7 @@ def apply_request_filters(qs, params):
 
     return qs
 
+
 # Shared computations
 def get_employee_leaves(emp) -> list[LeaveRequest]:
 
@@ -165,7 +176,9 @@ def get_employee_leaves(emp) -> list[LeaveRequest]:
 
     leaves = getattr(emp, "prefetched_leaves", None)
     if leaves is None:
-        leaves = list(LeaveRequest.objects.filter(employee=emp).order_by("-applied_at", "-id"))
+        leaves = list(
+            LeaveRequest.objects.filter(employee=emp).order_by("-applied_at", "-id")
+        )
     return list(leaves)
 
 
@@ -203,7 +216,10 @@ def requested_days(lr: LeaveRequest) -> float:
     if not lr.start_date or not lr.end_date:
         return 0.0
 
-    if lr.start_date == lr.end_date and (lr.session or "").strip().upper() in ("AM", "PM"):
+    if lr.start_date == lr.end_date and (lr.session or "").strip().upper() in (
+        "AM",
+        "PM",
+    ):
         return 0.5
 
     return float((lr.end_date - lr.start_date).days + 1)
@@ -225,7 +241,9 @@ def total_leave_this_year(emp, leaves: Optional[list[LeaveRequest]] = None) -> f
     return float(total)
 
 
-def used_leaves_by_type(emp, leaves: Optional[list[LeaveRequest]] = None) -> dict[str, float]:
+def used_leaves_by_type(
+    emp, leaves: Optional[list[LeaveRequest]] = None
+) -> dict[str, float]:
 
     if not emp:
         return {}
@@ -258,7 +276,9 @@ def used_leaves_by_type(emp, leaves: Optional[list[LeaveRequest]] = None) -> dic
     return out
 
 
-def remaining_leaves(emp, leaves: Optional[list[LeaveRequest]] = None) -> dict[str, float]:
+def remaining_leaves(
+    emp, leaves: Optional[list[LeaveRequest]] = None
+) -> dict[str, float]:
 
     if not emp:
         return {}
@@ -298,7 +318,7 @@ def remaining_leaves(emp, leaves: Optional[list[LeaveRequest]] = None) -> dict[s
 
 
 def remaining_balance_for_type(emp, leave_type: str) -> Optional[float]:
-  
+
     if not emp:
         return None
 
@@ -315,14 +335,11 @@ def remaining_balance_for_type(emp, leave_type: str) -> Optional[float]:
         allowed += vacation_carry_forward(emp, year_start)
 
     used = 0.0
-    qs = (
-        LeaveRequest.objects.filter(
-            employee=emp,
-            is_paid=True,
-            leave_type__iexact=leave_type_u,
-        )
-        .order_by("-applied_at", "-id")
-    )
+    qs = LeaveRequest.objects.filter(
+        employee=emp,
+        is_paid=True,
+        leave_type__iexact=leave_type_u,
+    ).order_by("-applied_at", "-id")
 
     for lr in qs:
         if (lr.status or "").strip().upper() != LeaveRequest.STATUS_APPROVED:
@@ -333,11 +350,13 @@ def remaining_balance_for_type(emp, leave_type: str) -> Optional[float]:
 
 
 def serialize_request_for_frontend(lr: LeaveRequest) -> Dict[str, Any]:
- 
+
     emp = lr.employee
     u = emp.user if emp else None
 
-    session = SESSION_MAP.get((lr.session or "").strip().upper(), (lr.session or "FULL"))
+    session = SESSION_MAP.get(
+        (lr.session or "").strip().upper(), (lr.session or "FULL")
+    )
     req_days = requested_days(lr)
 
     current_balance = None
@@ -346,7 +365,9 @@ def serialize_request_for_frontend(lr: LeaveRequest) -> Dict[str, Any]:
     if emp and lr.is_paid and lr.leave_type:
         current_balance = remaining_balance_for_type(emp, lr.leave_type)
         if current_balance is not None:
-            after_approval = round(max(float(current_balance) - float(req_days), 0.0), 1)
+            after_approval = round(
+                max(float(current_balance) - float(req_days), 0.0), 1
+            )
 
     return {
         "user": {

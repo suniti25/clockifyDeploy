@@ -2,6 +2,7 @@ from django.db import models
 from django.core.exceptions import ValidationError
 from user_app.models import Employee
 
+
 class LeaveRequest(models.Model):
     STATUS_PENDING = "PENDING"
     STATUS_APPROVED = "APPROVED"
@@ -51,15 +52,21 @@ class LeaveRequest(models.Model):
     start_date = models.DateField()
     end_date = models.DateField()
 
-    # Boundary sessions 
-    start_session = models.CharField(max_length=10, choices=SESSION_CHOICES, default="FULL")
-    end_session = models.CharField(max_length=10, choices=SESSION_CHOICES, default="FULL")
+    # Boundary sessions
+    start_session = models.CharField(
+        max_length=10, choices=SESSION_CHOICES, default="FULL"
+    )
+    end_session = models.CharField(
+        max_length=10, choices=SESSION_CHOICES, default="FULL"
+    )
 
     # Single session for each day
     session = models.CharField(max_length=10, choices=SESSION_CHOICES, default="FULL")
 
     reason = models.TextField(blank=True, null=True)
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    status = models.CharField(
+        max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING
+    )
     is_paid = models.BooleanField(default=False)
 
     applied_at = models.DateTimeField(auto_now_add=True)
@@ -76,7 +83,7 @@ class LeaveRequest(models.Model):
 
     #  prevents duplicate daily public messages per leave
     notified_employee_at = models.DateTimeField(null=True, blank=True)
-    notified_admin_at = models.DateTimeField(null=True, blank=True) 
+    notified_admin_at = models.DateTimeField(null=True, blank=True)
 
     def clean(self):
         if self.start_date and self.end_date and self.start_date > self.end_date:
@@ -85,10 +92,13 @@ class LeaveRequest(models.Model):
         # For single-day leave, start_session must equal end_session
         if self.start_date and self.end_date and self.start_date == self.end_date:
             if self.start_session != self.end_session:
-                raise ValidationError("For single-day leave, start_session must equal end_session.")
+                raise ValidationError(
+                    "For single-day leave, start_session must equal end_session."
+                )
 
     def total_days(self) -> float:
         import datetime
+
         if not self.start_date or not self.end_date:
             return 0.0
 
@@ -97,7 +107,9 @@ class LeaveRequest(models.Model):
         if day_count <= 0:
             return 0.0
 
-        days_list = [self.start_date + datetime.timedelta(days=i) for i in range(day_count)]
+        days_list = [
+            self.start_date + datetime.timedelta(days=i) for i in range(day_count)
+        ]
         # Exclude weekends
         weekdays = [d for d in days_list if d.weekday() < 5]  # 0=Mon, 6=Sun
         num_days = len(weekdays)

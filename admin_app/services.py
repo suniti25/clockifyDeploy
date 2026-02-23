@@ -15,7 +15,20 @@ from .helpers import apply_request_filters, _norm_status_expr
 # KPI SERVICES
 WORKING_DAYS_PER_MONTH = 21
 
-MONTH_ABBRS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+MONTH_ABBRS = [
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+]
 
 
 def _normalize_month_year(year: int | None, month: int | None) -> Tuple[int, int]:
@@ -68,7 +81,9 @@ def parse_kpi_month_year_params(params) -> Tuple[int, int]:
     return _normalize_month_year(year, month)
 
 
-def _overlap_days(start: date, end: date, window_start: date, window_end: date) -> float:
+def _overlap_days(
+    start: date, end: date, window_start: date, window_end: date
+) -> float:
     s = max(start, window_start)
     e = min(end, window_end)
     if s > e:
@@ -86,7 +101,9 @@ def _active_employee_count() -> int:
     )
 
 
-def sick_leave_kpi_for_current_month(*, year: int | None = None, month: int | None = None) -> Dict[str, Any]:
+def sick_leave_kpi_for_current_month(
+    *, year: int | None = None, month: int | None = None
+) -> Dict[str, Any]:
     year, month = _normalize_month_year(year, month)
     month_start, month_end = _month_window(year, month)
 
@@ -112,7 +129,9 @@ def sick_leave_kpi_for_current_month(*, year: int | None = None, month: int | No
 
     total_sick_days = 0.0
     for lr in qs:
-        total_sick_days += _overlap_days(lr.start_date, lr.end_date, month_start, month_end)
+        total_sick_days += _overlap_days(
+            lr.start_date, lr.end_date, month_start, month_end
+        )
 
     percent = round((total_sick_days / denom) * 100, 2)
 
@@ -126,7 +145,9 @@ def sick_leave_kpi_for_current_month(*, year: int | None = None, month: int | No
     }
 
 
-def vacation_leave_kpi_for_current_month(*, year: int | None = None, month: int | None = None) -> Dict[str, Any]:
+def vacation_leave_kpi_for_current_month(
+    *, year: int | None = None, month: int | None = None
+) -> Dict[str, Any]:
     year, month = _normalize_month_year(year, month)
     month_start, month_end = _month_window(year, month)
 
@@ -152,7 +173,9 @@ def vacation_leave_kpi_for_current_month(*, year: int | None = None, month: int 
 
     total_vacation_days = 0.0
     for lr in qs:
-        total_vacation_days += _overlap_days(lr.start_date, lr.end_date, month_start, month_end)
+        total_vacation_days += _overlap_days(
+            lr.start_date, lr.end_date, month_start, month_end
+        )
 
     percent = round((total_vacation_days / denom) * 100, 2)
 
@@ -166,7 +189,9 @@ def vacation_leave_kpi_for_current_month(*, year: int | None = None, month: int 
     }
 
 
-def wfh_leave_kpi_for_current_month(*, year: int | None = None, month: int | None = None) -> Dict[str, Any]:
+def wfh_leave_kpi_for_current_month(
+    *, year: int | None = None, month: int | None = None
+) -> Dict[str, Any]:
     year, month = _normalize_month_year(year, month)
     month_start, month_end = _month_window(year, month)
 
@@ -192,7 +217,9 @@ def wfh_leave_kpi_for_current_month(*, year: int | None = None, month: int | Non
 
     total_wfh_days = 0.0
     for lr in qs:
-        total_wfh_days += _overlap_days(lr.start_date, lr.end_date, month_start, month_end)
+        total_wfh_days += _overlap_days(
+            lr.start_date, lr.end_date, month_start, month_end
+        )
 
     percent = round((total_wfh_days / denom) * 100, 2)
 
@@ -391,7 +418,9 @@ class AdminRequestServices:
         return AdminRequestServices.get_status_counts(qs)
 
     @staticmethod
-    def top_leave_takers(params, days: int = 30, limit: int = 5) -> List[Dict[str, Any]]:
+    def top_leave_takers(
+        params, days: int = 30, limit: int = 5
+    ) -> List[Dict[str, Any]]:
         """
         Same filters except status (approved only).
 
@@ -415,14 +444,24 @@ class AdminRequestServices:
         # Compute totals in Python because total_days() is a model method
         # (session + weekend exclusion logic is not a simple DB aggregate).
         totals: Dict[int, Dict[str, Any]] = {}
-        for lr in qs.filter(applied_at__gte=since).select_related("employee", "employee__user"):
+        for lr in qs.filter(applied_at__gte=since).select_related(
+            "employee", "employee__user"
+        ):
             emp = getattr(lr, "employee", None)
             if not emp or not getattr(emp, "id", None):
                 continue
 
             user = getattr(emp, "user", None)
-            full_name = f"{getattr(user, 'first_name', '')} {getattr(user, 'last_name', '')}".strip() if user else ""
-            name = full_name or (getattr(user, "username", "") if user else "") or f"employee_{emp.id}"
+            full_name = (
+                f"{getattr(user, 'first_name', '')} {getattr(user, 'last_name', '')}".strip()
+                if user
+                else ""
+            )
+            name = (
+                full_name
+                or (getattr(user, "username", "") if user else "")
+                or f"employee_{emp.id}"
+            )
 
             rec = totals.get(emp.id)
             if not rec:

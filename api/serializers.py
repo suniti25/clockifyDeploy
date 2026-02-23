@@ -10,12 +10,11 @@ class LoginSerializer(serializers.Serializer):
 class EmployeeSerializer(serializers.ModelSerializer):
     class Meta:
         model = Employee
-        fields = '__all__'
+        fields = "__all__"
 
 
 class LeaveRequestSerializer(serializers.ModelSerializer):
     class Meta:
         model = LeaveRequest
-        fields = '__all__'
-        read_only_fields = ['employee']
-
+        fields = "__all__"
+        read_only_fields = ["employee"]

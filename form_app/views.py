@@ -32,7 +32,9 @@ logger = logging.getLogger(__name__)
 
 def _parse_iso_date(value, field_name: str):
     if value is None:
-        return None, Response({"error": f"{field_name} is required"}, status=status.HTTP_400_BAD_REQUEST)
+        return None, Response(
+            {"error": f"{field_name} is required"}, status=status.HTTP_400_BAD_REQUEST
+        )
 
     if isinstance(value, date):
         return value, None
@@ -55,7 +57,11 @@ def _parse_iso_date(value, field_name: str):
 @extend_schema(
     description="Apply a leave request (creates a PENDING request and notifies admin via Discord).",
     request=OpenApiTypes.OBJECT,
-    responses={201: OpenApiTypes.OBJECT, 400: OpenApiTypes.OBJECT, 401: OpenApiTypes.OBJECT},
+    responses={
+        201: OpenApiTypes.OBJECT,
+        400: OpenApiTypes.OBJECT,
+        401: OpenApiTypes.OBJECT,
+    },
 )
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -129,7 +135,9 @@ def apply_leave(request):
     try:
         send_leave_request_to_admin(lr)
     except Exception:
-        logger.exception("Failed to send leave request to Discord for leave_id=%s", lr.id)
+        logger.exception(
+            "Failed to send leave request to Discord for leave_id=%s", lr.id
+        )
 
     return Response(
         {
@@ -167,7 +175,9 @@ def get_requests(request):
     results = []
     for lr in qs[:200]:
         created_at = getattr(lr, "applied_at", None) or getattr(lr, "created_at", None)
-        paid_days, unpaid_days = compute_paid_unpaid_split_for_request(employee=employee, req=lr)
+        paid_days, unpaid_days = compute_paid_unpaid_split_for_request(
+            employee=employee, req=lr
+        )
         results.append(
             {
                 "id": lr.id,
@@ -222,13 +232,18 @@ def update_leave_by_body(request):
 
     original = get_object_or_404(LeaveRequest, id=leave_id, employee=employee)
     if original.status == LeaveRequest.STATUS_VOIDED:
-        return Response({"error": "Voided leave requests cannot be updated"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(
+            {"error": "Voided leave requests cannot be updated"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
     start_date_val = payload.get("start_date", original.start_date)
     end_date_val = payload.get("end_date", original.end_date)
     leave_type = payload.get("leave_type", original.leave_type)
     reason = payload.get("reason", getattr(original, "reason", "")) or ""
-    session = payload.get("session") or payload.get("half_day") or original.session or "FULL"
+    session = (
+        payload.get("session") or payload.get("half_day") or original.session or "FULL"
+    )
 
     start_date, resp = _parse_iso_date(start_date_val, "start_date")
     if resp:
@@ -268,7 +283,9 @@ def update_leave_by_body(request):
             "status": original.status,
         }
 
-        leave_days = compute_leave_days_for_payload(employee=employee, payload=payload_for_days)
+        leave_days = compute_leave_days_for_payload(
+            employee=employee, payload=payload_for_days
+        )
         original.is_paid = bool(
             compute_paid_status(
                 employee=employee,
@@ -287,7 +304,9 @@ def update_leave_by_body(request):
 
             update_admin_leave_message(original)
         except Exception:
-            logger.exception("Failed updating Discord message for leave_id=%s", original.id)
+            logger.exception(
+                "Failed updating Discord message for leave_id=%s", original.id
+            )
 
         return Response(
             {
@@ -340,7 +359,9 @@ def update_leave_by_body(request):
     try:
         send_leave_request_to_admin(new_lr)
     except Exception:
-        logger.exception("Failed to send reapply leave request to Discord for leave_id=%s", new_lr.id)
+        logger.exception(
+            "Failed to send reapply leave request to Discord for leave_id=%s", new_lr.id
+        )
 
     return Response(
         {

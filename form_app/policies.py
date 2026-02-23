@@ -84,12 +84,16 @@ def _anchor_from_date(d: Optional[date]) -> Optional[tuple[int, int]]:
     return d.month, d.day
 
 
-def get_leave_year_range_for_employee(employee, on_date: Optional[date] = None) -> tuple[date, date]:
+def get_leave_year_range_for_employee(
+    employee, on_date: Optional[date] = None
+) -> tuple[date, date]:
     on_date = on_date or timezone.localdate()
     policy = get_leave_policy_snapshot()
 
     override = getattr(employee, "leave_renewal_date_override", None)
-    anchor = _anchor_from_date(override) or _anchor_from_date(policy.global_renewal_date)
+    anchor = _anchor_from_date(override) or _anchor_from_date(
+        policy.global_renewal_date
+    )
 
     if anchor:
         anchor_month, anchor_day = anchor
