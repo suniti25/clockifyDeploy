@@ -31,6 +31,7 @@ from .serializers import (
     RegisterSerializer,
     ResetPasswordSerializer,
     UpdateEmailSerializer,
+    ChangePasswordSerializer,
 )
 
 logger = logging.getLogger(__name__)
@@ -203,6 +204,26 @@ class RefreshTokenView(APIView):
                 {"detail": "Invalid or expired refresh token"},
                 status=status.HTTP_401_UNAUTHORIZED,
             )
+
+
+class ChangePasswordView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        description="Change current user's password.",
+        request=ChangePasswordSerializer,
+        responses={200: OpenApiTypes.OBJECT, 400: OpenApiTypes.OBJECT},
+    )
+    def post(self, request):
+        ser = ChangePasswordSerializer(
+            data=request.data, context={"user": request.user}
+        )
+        ser.is_valid(raise_exception=True)
+        ser.save()
+        return Response(
+            {"detail": "Password changed successfully"},
+            status=status.HTTP_200_OK,
+        )
 
 
 class ForgotPasswordView(APIView):

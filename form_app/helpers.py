@@ -10,7 +10,7 @@ from django.utils.timezone import localdate
 from rest_framework import serializers
 
 from form_app.policies import (
-    get_leave_limits,
+    get_leave_limits_for_employee,
     get_carryover_percentage,
     get_leave_year_range_for_employee,
 )
@@ -54,7 +54,7 @@ def compute_paid_unpaid_split(
     if leave_type == "WFH" or leave_days <= 0.0:
         return 0.0, 0.0, 0.0
 
-    limits = get_leave_limits()
+    limits = get_leave_limits_for_employee(employee)
     if leave_type not in limits:
         return 0.0, leave_days, 0.0
 
@@ -123,7 +123,7 @@ def compute_paid_unpaid_split_for_request(
     leave_year_start, leave_year_end_excl = get_leave_year_range_for_employee(
         employee, on_date=req.start_date
     )
-    limits = get_leave_limits()
+    limits = get_leave_limits_for_employee(employee)
     if lt not in limits:
         return 0.0, leave_days
 
@@ -389,7 +389,7 @@ def carry_forward_only(employee, prev_start: date, prev_end_exclusive: date) -> 
     if bool(getattr(employee, "reset_leave_balance", False)):
         return 0.0
 
-    limits = get_leave_limits()
+    limits = get_leave_limits_for_employee(employee)
     vacation_limit = float(limits.get("VACATION", 0.0))
 
     qs = LeaveRequest.objects.filter(
@@ -427,7 +427,7 @@ def compute_paid_status(
     if leave_type == "WFH":
         return False
 
-    limits = get_leave_limits()
+    limits = get_leave_limits_for_employee(employee)
     if leave_type not in limits:
         return False
 

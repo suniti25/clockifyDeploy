@@ -180,3 +180,48 @@ class ResetPasswordSerializer(serializers.Serializer):
 
         validate_password(pwd)
         return data
+
+
+class ChangePasswordSerializer(serializers.Serializer):
+    old_password = serializers.CharField(write_only=True)
+    new_password = serializers.CharField(write_only=True)
+    confirm_password = serializers.CharField(write_only=True)
+
+    def validate(self, data):
+        user = self.context.get("user")
+        if not user:
+            raise serializers.ValidationError("User context is required")
+
+        old_pwd = (data.get("old_password") or "").strip()
+        new_pwd = (data.get("new_password") or "").strip()
+        cpwd = (data.get("confirm_password") or "").strip()
+
+        if not old_pwd:
+            raise serializers.ValidationError(
+                {"old_password": "Old password is required"}
+            )
+
+        if not user.check_password(old_pwd):
+            raise serializers.ValidationError(
+                {"old_password": "Old password is incorrect"}
+            )
+
+        if not new_pwd or not cpwd:
+            raise serializers.ValidationError(
+                "New password and confirm password are required"
+            )
+
+        if new_pwd != cpwd:
+            raise serializers.ValidationError(
+                {"confirm_password": "Passwords do not match"}
+            )
+
+        validate_password(new_pwd, user=user)
+        return data
+
+    def save(self, **kwargs):
+        user = self.context["user"]
+        new_pwd = (self.validated_data.get("new_password") or "").strip()
+        user.set_password(new_pwd)
+        user.save(update_fields=["password"])
+        return user

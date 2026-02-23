@@ -65,7 +65,7 @@ def hello_dashboard(request):
         _aggregate_approved_usage(employee, ctx)
     )
     leave_balances = _leave_balance_list(
-        ctx, paid_used_by_type, probation_leave_total, unpaid_leave_total
+        employee, ctx, paid_used_by_type, probation_leave_total, unpaid_leave_total
     )
 
     today = timezone.localdate()
@@ -126,7 +126,7 @@ def get_leave_balances(request):
 
     return Response(
         _leave_balance_list(
-            ctx, paid_used_by_type, probation_leave_total, unpaid_leave_total
+            employee, ctx, paid_used_by_type, probation_leave_total, unpaid_leave_total
         ),
         status=status.HTTP_200_OK,
     )

@@ -10,6 +10,7 @@ from rest_framework import serializers
 
 from form_app.models import LeaveRequest, LeavePolicySettings
 from form_app.helpers import display_is_paid
+from form_app.constants import LEAVE_LIMITS
 from form_app.policies import (
     compute_probation_end_date,
     get_leave_year_range_for_employee,
@@ -545,6 +546,10 @@ class AdminUserUpdateSerializer(serializers.Serializer):
         required=False, allow_blank=True, allow_null=True
     )
 
+    # Optional per-employee leave limit overrides, e.g. {"VACATION": 18}
+    # Use null to clear overrides.
+    leave_limits_override = serializers.JSONField(required=False, allow_null=True)
+
     def validate(self, data: dict[str, Any]):
         user_id = data["user_id"]
 
@@ -602,6 +607,67 @@ class AdminUserUpdateSerializer(serializers.Serializer):
                 {"joining_date": "Joining date cannot be in the future."}
             )
 
+        if "leave_limits_override" in data:
+            overrides = data.get("leave_limits_override")
+            if overrides is None:
+                # explicit clear
+                pass
+            elif not isinstance(overrides, dict):
+                raise serializers.ValidationError(
+                    {
+                        "leave_limits_override": "Must be an object mapping leave types to numbers."
+                    }
+                )
+            else:
+                allowed = set(str(k).strip().upper() for k in LEAVE_LIMITS.keys())
+                cleaned: dict[str, float] = {}
+                for raw_key, raw_val in overrides.items():
+                    if not isinstance(raw_key, str):
+                        raise serializers.ValidationError(
+                            {
+                                "leave_limits_override": "All keys must be strings (uppercase leave types)."
+                            }
+                        )
+                    key = raw_key.strip()
+                    if not key:
+                        raise serializers.ValidationError(
+                            {
+                                "leave_limits_override": "Leave type keys cannot be empty."
+                            }
+                        )
+
+                    if key != key.upper():
+                        raise serializers.ValidationError(
+                            {
+                                "leave_limits_override": f"Leave type '{key}' must be uppercase."
+                            }
+                        )
+
+                    if key not in allowed:
+                        raise serializers.ValidationError(
+                            {"leave_limits_override": f"Invalid leave type '{key}'."}
+                        )
+
+                    try:
+                        num = float(raw_val)
+                    except (TypeError, ValueError):
+                        raise serializers.ValidationError(
+                            {
+                                "leave_limits_override": f"Value for '{key}' must be a number."
+                            }
+                        )
+
+                    if num < 0:
+                        raise serializers.ValidationError(
+                            {
+                                "leave_limits_override": f"Value for '{key}' cannot be negative."
+                            }
+                        )
+
+                    cleaned[key] = num
+
+                data["leave_limits_override"] = cleaned
+
         return data
 
     @transaction.atomic
@@ -658,6 +724,19 @@ class AdminUserUpdateSerializer(serializers.Serializer):
             if current_project is not None:
                 emp.current_project = current_project or ""
                 updates.append("current_project")
+
+            if "leave_limits_override" in data:
+                overrides = data.get("leave_limits_override")
+                if overrides is None:
+                    emp.leave_limits_override = None
+                else:
+                    existing = emp.leave_limits_override
+                    if not isinstance(existing, dict):
+                        existing = {}
+                    merged = dict(existing)
+                    merged.update(overrides)
+                    emp.leave_limits_override = merged
+                updates.append("leave_limits_override")
 
             if updates:
                 emp.save(update_fields=updates)

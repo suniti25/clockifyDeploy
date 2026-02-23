@@ -59,6 +59,37 @@ def get_leave_limits() -> dict[str, float]:
     return get_leave_policy_snapshot().limits
 
 
+def get_leave_limits_for_employee(employee) -> dict[str, float]:
+    """Return leave limits for an employee, applying per-employee overrides.
+
+    Overrides are stored on the Employee model as a JSON dict like:
+    {"VACATION": 18, "SICK": 14}
+    """
+
+    limits = dict(get_leave_limits())
+
+    raw = getattr(employee, "leave_limits_override", None)
+    if not isinstance(raw, dict):
+        return limits
+
+    allowed = set(limits.keys())
+    for k, v in raw.items():
+        if not isinstance(k, str):
+            continue
+        key = k.strip().upper()
+        if key not in allowed:
+            continue
+        try:
+            num = float(v)
+        except (TypeError, ValueError):
+            continue
+        if num < 0:
+            continue
+        limits[key] = num
+
+    return limits
+
+
 def get_carryover_percentage() -> int:
     return get_leave_policy_snapshot().carryover_percentage
 
