@@ -38,11 +38,12 @@ def verify_discord_signature(request, body: bytes | None = None) -> bool:
     signature = request.headers.get("X-Signature-Ed25519")
     timestamp = request.headers.get("X-Signature-Timestamp")
 
-    if not signature or not timestamp or not settings.DISCORD_DEBUG:
+    public_key = (settings.DISCORD_PUBLIC_KEY or "").strip()
+    if not signature or not timestamp or not public_key:
         return False
 
     try:
-        verify_key = VerifyKey(bytes.fromhex(settings.DISCORD_DEBUG))
+        verify_key = VerifyKey(bytes.fromhex(public_key))
         message_body = body if body is not None else request.body
         verify_key.verify(timestamp.encode() + message_body, bytes.fromhex(signature))
         return True
@@ -377,7 +378,7 @@ def cron_daily_on_leave(request):
             "status": "sent" if ok else "nothing_to_send",
             "date": str(today),
             "eligible_count": eligible,
-            "employee_channel_id": services.EMPLOYEE_CHANNEL_ID,
+            "employee_channel_id": settings.DISCORD_EMPLOYEE_CHANNEL_ID,
         }
     )
 
@@ -409,6 +410,6 @@ def cron_daily_approved(request):
             "status": "sent" if ok else "nothing_to_send",
             "date": str(today),
             "eligible_count": eligible,
-            "admin_channel_id": services.ADMIN_CHANNEL_ID,
+            "admin_channel_id": settings.DISCORD_ADMIN_CHANNEL_ID,
         }
     )
