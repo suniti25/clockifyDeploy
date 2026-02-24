@@ -59,3 +59,5 @@ uritemplate==4.2.0
 urllib3==2.6.3
 virtualenv==20.38.0
 yarl==1.22.0
+gunicorn==20.1.0
+setuptools==79.0.1

@@ -4,6 +4,8 @@ services:
   db:
     image: postgres:15
     container_name: leave-db
+    environment:
+      POSTGRES_HOST_AUTH_METHOD: trust
     env_file:
       - .env
     volumes:
