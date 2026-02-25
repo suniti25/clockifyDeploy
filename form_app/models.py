@@ -79,7 +79,7 @@ class LeaveRequest(models.Model):
     discord_message_id = models.CharField(max_length=50, null=True, blank=True)
 
     # Google Calendar sync (event id stored after creation)
-    google_event_id = models.CharField(max_length=255, blank=True, default="")
+    google_event_id = models.TextField(blank=True, default="")
 
     #  prevents duplicate daily public messages per leave
     notified_employee_at = models.DateTimeField(null=True, blank=True)

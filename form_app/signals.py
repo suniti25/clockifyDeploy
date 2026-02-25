@@ -61,13 +61,12 @@ logger = logging.getLogger(__name__)
 @receiver(post_save, sender=LeaveRequest)
 def notify_on_leave_approval(sender, instance, created, **kwargs):
 
-    # Only act on updates (not creation) and only when approved.
-    # Avoid re-triggering on unrelated saves (e.g., updating google_event_id).
     update_fields = kwargs.get("update_fields")
     if update_fields is not None and "status" not in update_fields:
         return
 
-    if created or instance.status not in ("APPROVED", "REJECTED"):
+    status = (instance.status or "").strip().upper()
+    if status not in ("APPROVED", "REJECTED"):
         return
 
     def _notify_discord():
@@ -77,9 +76,9 @@ def notify_on_leave_approval(sender, instance, created, **kwargs):
                 send_rejected_leave_to_employees,
             )
 
-            if instance.status == "APPROVED":
+            if status == "APPROVED":
                 send_approved_leave_to_employees(instance)
-            elif instance.status == "REJECTED":
+            else:  # REJECTED
                 send_rejected_leave_to_employees(instance)
         except ImportError:
             logger.warning(
@@ -95,17 +94,18 @@ def notify_on_leave_approval(sender, instance, created, **kwargs):
     except Exception:
         _notify_discord()
 
-    if instance.status == "APPROVED":
+    # Some leaves may be created directly as APPROVED (admin, seed, etc.)
+    if status == "APPROVED":
 
         def _sync_google():
             try:
                 from integrations.services import sync_approved_leave_to_google
 
-                sync_approved_leave_to_google(instance)
+                ok = sync_approved_leave_to_google(instance)
+                logger.warning("Google sync result leave_id=%s ok=%s", instance.id, ok)
             except Exception:
                 logger.exception("Failed to sync approved leave to Google Calendar")
 
-        # Best-effort Google Calendar sync for approved leaves (defer off the request thread).
         try:
             transaction.on_commit(
                 lambda: threading.Thread(target=_sync_google, daemon=True).start()
