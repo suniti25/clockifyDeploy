@@ -13,7 +13,6 @@ from integrations.models import GoogleCalendarCredential
 logger = logging.getLogger(__name__)
 
 KTM_TZ = ZoneInfo("Asia/Kathmandu")
-KTM_TZ_NAME = "Asia/Kathmandu"
 GOOGLE_SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
 
 
@@ -87,6 +86,7 @@ def _normalize_session(raw: str | None) -> str:
 
 
 def _build_event_body_for_day(leave: LeaveRequest, day) -> dict:
+
     name = _employee_display_name(leave)
     leave_type_title = (leave.leave_type or "").strip().title() or "Leave"
     leave_type_upper = (leave.leave_type or "").strip().upper()
@@ -98,7 +98,7 @@ def _build_event_body_for_day(leave: LeaveRequest, day) -> dict:
     if getattr(leave, "reason", None):
         desc.append(f"Reason: {leave.reason}")
 
-    # FULL => all-day event
+    # FULL
     if session == "FULL":
         return {
             "summary": f"{leave_type_title} - {name}",
@@ -113,14 +113,13 @@ def _build_event_body_for_day(leave: LeaveRequest, day) -> dict:
 
     start_dt = datetime.combine(day, start_t, tzinfo=KTM_TZ)
     end_dt = datetime.combine(day, end_t, tzinfo=KTM_TZ)
-
-    half_label = "Morning" if session == "AM" else "Afternoon"
+    half_label = session  # "AM" or "PM"
 
     return {
         "summary": f"{leave_type_title} ({half_label}) - {name}",
         "description": "\n".join(desc),
-        "start": {"dateTime": start_dt.isoformat(), "timeZone": KTM_TZ_NAME},
-        "end": {"dateTime": end_dt.isoformat(), "timeZone": KTM_TZ_NAME},
+        "start": {"dateTime": start_dt.isoformat()},
+        "end": {"dateTime": end_dt.isoformat()},
     }
 
 
@@ -134,11 +133,7 @@ def _delete_event_ids(service, calendar_id: str, event_ids: list[str]) -> None:
 
 def delete_leave_events_from_google(leave: LeaveRequest, user=None) -> bool:
     """
-    <<<<<<< HEAD
-    =======
-        Standalone delete helper (used on reject/void).
-    >>>>>>> origin/main
-        Deletes events referenced by leave.google_event_id and clears the field.
+    Deletes events referenced by leave.google_event_id and clears the field.
     """
     if not leave:
         return False
@@ -215,7 +210,7 @@ def sync_approved_leave_to_google(leave: LeaveRequest, user=None) -> bool:
     try:
         service = build("calendar", "v3", credentials=creds, cache_discovery=False)
 
-        # Delete old events using SAME service (no double build)
+        # Delete old events (if any)
         raw_old = (getattr(leave, "google_event_id", "") or "").strip()
         if raw_old:
             old_ids = [eid.strip() for eid in raw_old.split(",") if eid.strip()]
@@ -223,7 +218,7 @@ def sync_approved_leave_to_google(leave: LeaveRequest, user=None) -> bool:
             leave.google_event_id = ""
             leave.save(update_fields=["google_event_id"])
 
-        # weekday dates only
+        # Create events only for weekdays
         start_date = leave.start_date
         end_date = leave.end_date or leave.start_date
         total = (end_date - start_date).days + 1
