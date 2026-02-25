@@ -291,14 +291,9 @@ class AdminRequestServices:
     @staticmethod
     def ordering_for_params(params) -> list[str]:
         """Returns a Django order_by list for supported sorts.
-
-        Supports canonical params:
-          - sort_by=<field>&sort_dir=asc|desc
-
         Also supports legacy UI patterns where the direction is sent
-        as the value of the field key (e.g. leave_type=asc).
+        as the value of the field key.
         """
-
         sort_by = params.get("sort_by") or params.get("sort")
         sort_dir = AdminRequestServices._parse_sort_dir(
             params.get("sort_dir") or params.get("sort_order") or params.get("order")
@@ -315,7 +310,6 @@ class AdminRequestServices:
                 sort_by = o
                 sort_dir = sort_dir or "asc"
 
-        # Legacy: leave_type=asc, paid=desc, start_date=asc, etc.
         if not sort_by:
             legacy_fields = [
                 "leave_type",
@@ -424,7 +418,7 @@ class AdminRequestServices:
         """
         Same filters except status (approved only).
 
-        Ranking is by total approved leave days (weekdays-only via LeaveRequest.total_days),
+        Ranking is by total approved leave days (weekdays-only=total_days),
         not by number of requests.
         """
         filter_params = AdminRequestServices._strip_pagination_params(params).copy()
@@ -441,8 +435,6 @@ class AdminRequestServices:
 
         since = timezone.now() - timedelta(days=days)
 
-        # Compute totals in Python because total_days() is a model method
-        # (session + weekend exclusion logic is not a simple DB aggregate).
         totals: Dict[int, Dict[str, Any]] = {}
         for lr in qs.filter(applied_at__gte=since).select_related(
             "employee", "employee__user"

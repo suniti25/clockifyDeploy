@@ -35,7 +35,6 @@ class LoginSerializer(serializers.Serializer):
         if not matched_user:
             raise serializers.ValidationError("Invalid username or password")
 
-        # Authenticate using the stored canonical username so the auth backend
         # remains unchanged while login becomes case-insensitive.
         user = authenticate(username=matched_user.username, password=password)
 

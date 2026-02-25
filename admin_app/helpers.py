@@ -7,7 +7,12 @@ from typing import Any, Dict, Optional
 from django.db.models import Q
 from django.utils import timezone
 
-from form_app.helpers import overlapping_days, display_is_paid, _norm_status_expr
+from form_app.helpers import (
+    overlapping_days,
+    display_is_paid,
+    _norm_status_expr,
+    compute_paid_unpaid_split_for_request,
+)
 from form_app.models import LeaveRequest
 from form_app.policies import get_leave_limits_for_employee
 from user_app.helpers import get_leave_year_range, carry_forward_only
@@ -83,7 +88,7 @@ def apply_request_filters(qs, params):
     paid_raw = params.get("paid") or params.get("is_paid")
 
     # Guard: some UIs incorrectly reuse filter keys for sorting
-    # (e.g. leave_type=asc, year=desc). Treat these as non-filters.
+    # Treat these as non-filters.
     if _looks_like_sort_dir(month_raw):
         month_raw = ""
     if _looks_like_sort_dir(year_raw):
@@ -128,7 +133,7 @@ def apply_request_filters(qs, params):
         # overlap: start <= m_end AND end >= m_start
         qs = qs.filter(start_date__lte=m_end, end_date__gte=m_start)
 
-    # status filter (normalized)
+    # status filter
     if status_val:
         wanted = status_val.upper()
         # If status is not one of the known choices, ignore it.
@@ -249,7 +254,6 @@ def _aggregate_approved_usage(
     today: Optional[date] = None,
 ) -> tuple[dict[str, float], float, float, float, date, date]:
     """Mirror employee dashboard usage logic for admin-side stats.
-
     Rules:
     - Only APPROVED requests count.
     - Skip WFH.
@@ -426,6 +430,16 @@ def serialize_request_for_frontend(lr: LeaveRequest) -> Dict[str, Any]:
     current_balance = None
     after_approval = None
 
+    paid_days = 0.0
+    unpaid_days = 0.0
+    if emp:
+        try:
+            paid_days, unpaid_days = compute_paid_unpaid_split_for_request(
+                employee=emp, req=lr
+            )
+        except Exception:
+            paid_days, unpaid_days = 0.0, 0.0
+
     if emp and lr.is_paid and lr.leave_type:
         current_balance = remaining_balance_for_type(emp, lr.leave_type)
         if current_balance is not None:
@@ -448,6 +462,8 @@ def serialize_request_for_frontend(lr: LeaveRequest) -> Dict[str, Any]:
         "start_date": lr.start_date.isoformat() if lr.start_date else None,
         "end_date": lr.end_date.isoformat() if lr.end_date else None,
         "number_of_days": float(req_days),
+        "paid_days": float(paid_days),
+        "unpaid_days": float(unpaid_days),
         "current_balance": current_balance,
         "after_approval": after_approval,
         "appliedAt": lr.applied_at.isoformat() if lr.applied_at else None,

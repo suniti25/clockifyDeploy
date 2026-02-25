@@ -20,7 +20,7 @@ class Employee(models.Model):
 
     leave_renewal_date_override = models.DateField(null=True, blank=True)
 
-    # Per-employee leave limit overrides, e.g. {"VACATION": 18}
+    # Per-employee leave limit overrides,
     # Keys are expected to be uppercase leave type names.
     leave_limits_override = models.JSONField(blank=True, null=True)
 

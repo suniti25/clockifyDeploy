@@ -237,56 +237,41 @@ def discord_interactions(request):
         except ValueError:
             return _ephemeral("Invalid leave ID")
 
-        application_id = str(data.get("application_id") or "").strip()
-        interaction_token = str(data.get("token") or "").strip()
-
-        def _finish_interaction_message(msg: str) -> None:
-            # Best-effort: update the deferred interaction response.
+        def _notify_async(leave_id: int) -> None:
             try:
-                services.edit_original_interaction_response(
-                    application_id=application_id,
-                    interaction_token=interaction_token,
-                    content=msg,
-                )
+                notify_leave_decision(leave_id=leave_id)
             except Exception:
-                logger.exception("Failed to update interaction response")
+                logger.exception(
+                    "notify_leave_decision failed for leave_id=%s", leave_id
+                )
 
         # APPROVE MODAL
         if parts[:3] == ["leave", "approve", "modal"]:
+            try:
+                lr = decide_leave(
+                    leave_id=leave_id,
+                    new_status="APPROVED",
+                    message=None,
+                    notify=False,
+                )
+            except LeaveRequest.DoesNotExist:
+                logger.warning(
+                    "Discord approve: LeaveRequest not found (leave_id=%s). Likely env/db mismatch.",
+                    leave_id,
+                )
+                return _ephemeral(
+                    "Leave request not found. This usually means the Discord message was created by a different environment (prod vs local) than the one handling interactions."
+                )
+            except ValueError as e:
+                logger.error("ValueError approving leave %s: %s", leave_id, e)
+                return _ephemeral(str(e))
+            except Exception:
+                logger.exception("Exception approving leave %s", leave_id)
+                return _ephemeral("Failed to approve leave")
 
-            def _do_approve() -> None:
-                try:
-                    lr = decide_leave(
-                        leave_id=leave_id,
-                        new_status="APPROVED",
-                        message=None,
-                        notify=False,
-                    )
-                    try:
-                        notify_leave_decision(leave_id=lr.id)
-                    except Exception:
-                        logger.exception(
-                            "notify_leave_decision failed for leave_id=%s", lr.id
-                        )
-                    _finish_interaction_message("Leave approved ✅")
-                except LeaveRequest.DoesNotExist:
-                    logger.warning(
-                        "Discord approve: LeaveRequest not found (leave_id=%s). Likely env/db mismatch.",
-                        leave_id,
-                    )
-                    _finish_interaction_message(
-                        "Leave request not found. This usually means the Discord message was created by a different environment (prod vs local) than the one handling interactions."
-                    )
-                except ValueError as e:
-                    logger.error("ValueError approving leave %s: %s", leave_id, e)
-                    _finish_interaction_message(str(e))
-                except Exception:
-                    logger.exception("Exception approving leave %s", leave_id)
-                    _finish_interaction_message("Failed to approve leave")
-
-            # Always acknowledge within Discord's 3-second window, then finish in background.
-            threading.Thread(target=_do_approve, daemon=True).start()
-            return _defer_ephemeral()
+            # Notifications can be slow (Discord API / email). Run them async.
+            threading.Thread(target=_notify_async, args=(lr.id,), daemon=True).start()
+            return _ephemeral("Leave approved ✅")
 
         # REJECT MODAL
         if parts[:3] == ["leave", "reject", "modal"]:
@@ -301,37 +286,29 @@ def discord_interactions(request):
             if not rejection_reason:
                 return _ephemeral("Rejection reason required")
 
-            def _do_reject() -> None:
-                try:
-                    lr = decide_leave(
-                        leave_id=leave_id,
-                        new_status="REJECTED",
-                        message=rejection_reason,
-                        notify=False,
-                    )
-                    try:
-                        notify_leave_decision(leave_id=lr.id)
-                    except Exception:
-                        logger.exception(
-                            "notify_leave_decision failed for leave_id=%s", lr.id
-                        )
-                    _finish_interaction_message("Leave rejected ❌")
-                except LeaveRequest.DoesNotExist:
-                    logger.warning(
-                        "Discord reject: LeaveRequest not found (leave_id=%s). Likely env/db mismatch.",
-                        leave_id,
-                    )
-                    _finish_interaction_message(
-                        "Leave request not found. This usually means the Discord message was created by a different environment (prod vs local) than the one handling interactions."
-                    )
-                except ValueError as e:
-                    _finish_interaction_message(str(e))
-                except Exception:
-                    logger.exception("Failed to reject leave %s", leave_id)
-                    _finish_interaction_message("Failed to reject leave")
+            try:
+                lr = decide_leave(
+                    leave_id=leave_id,
+                    new_status="REJECTED",
+                    message=rejection_reason,
+                    notify=False,
+                )
+            except LeaveRequest.DoesNotExist:
+                logger.warning(
+                    "Discord reject: LeaveRequest not found (leave_id=%s). Likely env/db mismatch.",
+                    leave_id,
+                )
+                return _ephemeral(
+                    "Leave request not found. This usually means the Discord message was created by a different environment (prod vs local) than the one handling interactions."
+                )
+            except ValueError as e:
+                return _ephemeral(str(e))
+            except Exception:
+                logger.exception("Failed to reject leave %s", leave_id)
+                return _ephemeral("Failed to reject leave")
 
-            threading.Thread(target=_do_reject, daemon=True).start()
-            return _defer_ephemeral()
+            threading.Thread(target=_notify_async, args=(lr.id,), daemon=True).start()
+            return _ephemeral("Leave rejected ❌")
 
         return _ephemeral("Unhandled modal action")
 
