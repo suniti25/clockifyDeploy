@@ -60,11 +60,7 @@ def get_leave_limits() -> dict[str, float]:
 
 
 def get_leave_limits_for_employee(employee) -> dict[str, float]:
-    """Return leave limits for an employee, applying per-employee overrides.
-
-    Overrides are stored on the Employee model as a JSON dict like:
-    {"VACATION": 18, "SICK": 14}
-    """
+    """Return leave limits for an employee, applying per-employee overrides."""
 
     limits = dict(get_leave_limits())
 

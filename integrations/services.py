@@ -134,11 +134,8 @@ def _delete_event_ids(service, calendar_id: str, event_ids: list[str]) -> None:
 
 def delete_leave_events_from_google(leave: LeaveRequest, user=None) -> bool:
     """
-    <<<<<<< HEAD
-    =======
-        Standalone delete helper (used on reject/void).
-    >>>>>>> origin/main
-        Deletes events referenced by leave.google_event_id and clears the field.
+
+    Deletes events referenced by leave.google_event_id and clears the field.
     """
     if not leave:
         return False
