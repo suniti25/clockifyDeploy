@@ -15,6 +15,10 @@ from discord_app.services import (
     send_rejection_email_to_employee,
 )
 
+from integrations.services import (
+    sync_approved_leave_to_google,
+    delete_leave_events_from_google,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +35,7 @@ def notify_leave_decision(*, leave_id: int) -> None:
         )
         return
 
-    # Best-effort admin daily summary
+    # admin daily summary
     try:
         if (
             lr.status == LeaveRequest.STATUS_APPROVED
@@ -41,7 +45,7 @@ def notify_leave_decision(*, leave_id: int) -> None:
     except Exception:
         pass
 
-    # Best-effort discord updates
+    #  discord updates
     try:
         update_discord_leave_message(lr)
     except Exception:
@@ -60,7 +64,7 @@ def notify_leave_decision(*, leave_id: int) -> None:
         except Exception:
             pass
 
-    # Best-effort email
+    #  email
     try:
         if lr.status == LeaveRequest.STATUS_APPROVED:
             send_approval_email_to_employee(lr)
@@ -81,7 +85,7 @@ def decide_leave(
     if new_status not in (LeaveRequest.STATUS_APPROVED, LeaveRequest.STATUS_REJECTED):
         raise ValueError("new_status must be APPROVED or REJECTED")
 
-    old_leave = None
+    old_leave: LeaveRequest | None = None
 
     with transaction.atomic():
         lr = (
@@ -98,10 +102,10 @@ def decide_leave(
             lr.rejection_reason = None
             lr.approval_reason = msg
 
-            #  approval timestamp
+            # approval timestamp
             lr.approved_at = timezone.now()
 
-            #  reset daily notification flags
+            # reset daily notification flags
             lr.notified_admin_at = None
             lr.notified_employee_at = None
 
@@ -128,7 +132,7 @@ def decide_leave(
                     "notified_employee_at",
                 ]
             )
-            # If this is a reapply and old leave was APPROVED, void the old leave
+            # reapply and old leave was APPROVED, void the old leave
             old_id = getattr(lr, "reapplied_from_id", None)
             if old_id:
                 old_leave = (
@@ -149,7 +153,7 @@ def decide_leave(
             lr.rejection_reason = msg
             lr.approval_reason = None
 
-            # optional: clear approval metadata
+            # clear approval metadata
             lr.approved_at = None
             lr.notified_admin_at = None
             lr.notified_employee_at = None
@@ -165,7 +169,16 @@ def decide_leave(
                 ]
             )
 
+    # notifications (discord/email)
     if notify:
         notify_leave_decision(leave_id=lr.id)
+
+    # Google Calendar sync after commit
+    if new_status == LeaveRequest.STATUS_APPROVED:
+        transaction.on_commit(lambda: sync_approved_leave_to_google(lr))
+        if old_leave:
+            transaction.on_commit(lambda: delete_leave_events_from_google(old_leave))
+    else:
+        transaction.on_commit(lambda: delete_leave_events_from_google(lr))
 
     return lr

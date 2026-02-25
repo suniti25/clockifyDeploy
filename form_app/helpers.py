@@ -215,9 +215,16 @@ def normalize_session(session: str | None) -> str:
     if session is None:
         raise serializers.ValidationError("Session is required (FD/FULL, AM, or PM).")
 
+    if isinstance(session, bool):
+        return "AM" if session is True else "FULL"
+
     s = str(session).strip().upper()
     if s == "FD":
         s = "FULL"
+    if s in {"MORNING"}:
+        s = "AM"
+    if s in {"AFTERNOON"}:
+        s = "PM"
 
     if s not in {"FULL", "AM", "PM"}:
         raise serializers.ValidationError("Invalid session. Use FD/FULL, AM, or PM.")
