@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, time, timedelta
+from datetime import datetime, time, timedelta, date
 from zoneinfo import ZoneInfo
 
 from django.conf import settings
@@ -13,6 +13,7 @@ from integrations.models import GoogleCalendarCredential
 logger = logging.getLogger(__name__)
 
 KTM_TZ = ZoneInfo("Asia/Kathmandu")
+KTM_TZ_NAME = "Asia/Kathmandu"
 GOOGLE_SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
 
 
@@ -85,8 +86,7 @@ def _normalize_session(raw: str | None) -> str:
     return "FULL"
 
 
-def _build_event_body_for_day(leave: LeaveRequest, day) -> dict:
-
+def _build_event_body_for_day(leave: LeaveRequest, day: date) -> dict:
     name = _employee_display_name(leave)
     leave_type_title = (leave.leave_type or "").strip().title() or "Leave"
     leave_type_upper = (leave.leave_type or "").strip().upper()
@@ -98,7 +98,7 @@ def _build_event_body_for_day(leave: LeaveRequest, day) -> dict:
     if getattr(leave, "reason", None):
         desc.append(f"Reason: {leave.reason}")
 
-    # FULL
+    # FULL DAY
     if session == "FULL":
         return {
             "summary": f"{leave_type_title} - {name}",
@@ -107,19 +107,20 @@ def _build_event_body_for_day(leave: LeaveRequest, day) -> dict:
             "end": {"date": (day + timedelta(days=1)).isoformat()},
         }
 
-    # AM/PM 
+    # AM/PM
     start_t = time(9, 0) if session == "AM" else time(14, 0)
     end_t = time(13, 0) if session == "AM" else time(18, 0)
 
     start_dt = datetime.combine(day, start_t, tzinfo=KTM_TZ)
     end_dt = datetime.combine(day, end_t, tzinfo=KTM_TZ)
+
     half_label = session  # "AM" or "PM"
 
     return {
         "summary": f"{leave_type_title} ({half_label}) - {name}",
         "description": "\n".join(desc),
-        "start": {"dateTime": start_dt.isoformat()},
-        "end": {"dateTime": end_dt.isoformat()},
+        "start": {"dateTime": start_dt.isoformat(), "timeZone": KTM_TZ_NAME},
+        "end": {"dateTime": end_dt.isoformat(), "timeZone": KTM_TZ_NAME},
     }
 
 
@@ -210,7 +211,7 @@ def sync_approved_leave_to_google(leave: LeaveRequest, user=None) -> bool:
     try:
         service = build("calendar", "v3", credentials=creds, cache_discovery=False)
 
-        # Delete old events using SAME service 
+        # Delete old events using SAME service
         raw_old = (getattr(leave, "google_event_id", "") or "").strip()
         if raw_old:
             old_ids = [eid.strip() for eid in raw_old.split(",") if eid.strip()]
