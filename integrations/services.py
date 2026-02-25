@@ -98,10 +98,10 @@ def _build_event_body_for_day(leave: LeaveRequest, day) -> dict:
     if getattr(leave, "reason", None):
         desc.append(f"Reason: {leave.reason}")
 
-    # FULL => all-day
+    # FULL => all-day event
     if session == "FULL":
         return {
-            "summary": f"{leave_type_title} Leave - {name}",
+            "summary": f"{leave_type_title} - {name}",
             "description": "\n".join(desc),
             "start": {"date": day.isoformat()},
             "end": {"date": (day + timedelta(days=1)).isoformat()},
@@ -134,8 +134,11 @@ def _delete_event_ids(service, calendar_id: str, event_ids: list[str]) -> None:
 
 def delete_leave_events_from_google(leave: LeaveRequest, user=None) -> bool:
     """
-    Standalone delete helper (used on reject/void).
-    Deletes events referenced by leave.google_event_id and clears the field.
+    <<<<<<< HEAD
+    =======
+        Standalone delete helper (used on reject/void).
+    >>>>>>> origin/main
+        Deletes events referenced by leave.google_event_id and clears the field.
     """
     if not leave:
         return False
@@ -212,7 +215,7 @@ def sync_approved_leave_to_google(leave: LeaveRequest, user=None) -> bool:
     try:
         service = build("calendar", "v3", credentials=creds, cache_discovery=False)
 
-        # delete old events using SAME service (no double build)
+        # Delete old events using SAME service (no double build)
         raw_old = (getattr(leave, "google_event_id", "") or "").strip()
         if raw_old:
             old_ids = [eid.strip() for eid in raw_old.split(",") if eid.strip()]
