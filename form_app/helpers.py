@@ -389,6 +389,12 @@ def carry_forward_only(employee, prev_start: date, prev_end_exclusive: date) -> 
     if bool(getattr(employee, "reset_leave_balance", False)):
         return 0.0
 
+    joining_date = getattr(employee, "joining_date", None)
+    # Eligibility: carry-forward applies only if the employee was employed for the
+    # full previous leave year window.
+    if joining_date and joining_date > prev_start:
+        return 0.0
+
     limits = get_leave_limits_for_employee(employee)
     vacation_limit = float(limits.get("VACATION", 0.0))
 

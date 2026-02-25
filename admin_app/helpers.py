@@ -230,15 +230,105 @@ def total_leave_this_year(emp, leaves: Optional[list[LeaveRequest]] = None) -> f
         return 0.0
 
     leaves = leaves if leaves is not None else get_employee_leaves(emp)
-    year_start, year_end_excl = get_leave_year_window(emp)
+    paid_used_by_type, probation_total, unpaid_total, _carry, _ys, _ye = (
+        _aggregate_approved_usage(emp, leaves=leaves)
+    )
 
-    total = 0.0
+    total = (
+        float(sum(paid_used_by_type.values()))
+        + float(probation_total)
+        + float(unpaid_total)
+    )
+    return float(round(total, 1))
+
+
+def _aggregate_approved_usage(
+    emp,
+    *,
+    leaves: Optional[list[LeaveRequest]] = None,
+    today: Optional[date] = None,
+) -> tuple[dict[str, float], float, float, float, date, date]:
+    """Mirror employee dashboard usage logic for admin-side stats.
+
+    Rules:
+    - Only APPROVED requests count.
+    - Skip WFH.
+    - If request is during probation window, count as probation leave.
+    - Paid usage is capped by allowed limits (VACATION includes carry-forward).
+    - Any overflow beyond allowed limits becomes unpaid.
+    """
+
+    if not emp:
+        today = today or timezone.localdate()
+        return {}, 0.0, 0.0, 0.0, today, today
+
+    leaves = leaves if leaves is not None else get_employee_leaves(emp)
+    year_start, year_end_excl = get_leave_year_window(emp, today=today)
+
+    carry = float(vacation_carry_forward(emp, year_start))
+
+    limits = get_leave_limits_for_employee(emp)
+    total_allowed_by_type: dict[str, float] = {
+        (lt or "").strip().upper(): float(limit) for lt, limit in limits.items()
+    }
+    if "VACATION" in total_allowed_by_type:
+        total_allowed_by_type["VACATION"] = float(
+            total_allowed_by_type["VACATION"]
+        ) + float(carry)
+
+    paid_used_by_type: dict[str, float] = {}
+    probation_total = 0.0
+    unpaid_total = 0.0
+
+    joining_date = getattr(emp, "joining_date", None)
+    probation_end_date = getattr(emp, "probation_end_date", None)
+
     for lr in leaves:
         if (lr.status or "").strip().upper() != LeaveRequest.STATUS_APPROVED:
             continue
-        total += float(overlapping_days(lr, year_start, year_end_excl))
 
-    return float(total)
+        days = float(overlapping_days(lr, year_start, year_end_excl))
+        if days <= 0:
+            continue
+
+        lt = (lr.leave_type or "").strip().upper()
+        if lt == "WFH":
+            continue
+
+        in_probation = (
+            bool(joining_date)
+            and bool(probation_end_date)
+            and bool(getattr(lr, "start_date", None))
+            and joining_date <= lr.start_date <= probation_end_date
+        )
+        if in_probation:
+            probation_total += days
+            continue
+
+        if lt not in total_allowed_by_type:
+            unpaid_total += days
+            continue
+
+        remaining = max(
+            float(total_allowed_by_type[lt]) - float(paid_used_by_type.get(lt, 0.0)),
+            0.0,
+        )
+        paid_portion = min(remaining, days)
+        unpaid_portion = max(days - paid_portion, 0.0)
+
+        if paid_portion > 0:
+            paid_used_by_type[lt] = float(paid_used_by_type.get(lt, 0.0) + paid_portion)
+        if unpaid_portion > 0:
+            unpaid_total += unpaid_portion
+
+    return (
+        paid_used_by_type,
+        float(probation_total),
+        float(unpaid_total),
+        float(carry),
+        year_start,
+        year_end_excl,
+    )
 
 
 def used_leaves_by_type(
@@ -249,30 +339,18 @@ def used_leaves_by_type(
         return {}
 
     leaves = leaves if leaves is not None else get_employee_leaves(emp)
-    year_start, year_end_excl = get_leave_year_window(emp)
 
-    out: dict[str, float] = {}
-    unpaid_total = 0.0
+    paid_used_by_type, _probation_total, unpaid_total, _carry, _ys, _ye = (
+        _aggregate_approved_usage(emp, leaves=leaves)
+    )
 
-    for lr in leaves:
-        if (lr.status or "").strip().upper() != LeaveRequest.STATUS_APPROVED:
-            continue
-
-        days = float(overlapping_days(lr, year_start, year_end_excl))
-        if days <= 0:
-            continue
-
-        if lr.is_paid:
-            key = (lr.leave_type or "").strip().upper()
-            out[key] = float(out.get(key, 0.0) + days)
-        else:
-            if (lr.leave_type or "").strip().upper() == "WFH":
-                continue
-            unpaid_total += float(days)
-
+    out: dict[str, float] = {
+        k: float(round(v, 1)) for k, v in paid_used_by_type.items()
+    }
     if unpaid_total > 0:
-        out["UNPAID"] = float(out.get("UNPAID", 0.0) + unpaid_total)
-
+        out["UNPAID"] = float(
+            round(float(out.get("UNPAID", 0.0)) + float(unpaid_total), 1)
+        )
     return out
 
 
@@ -284,23 +362,9 @@ def remaining_leaves(
         return {}
 
     leaves = leaves if leaves is not None else get_employee_leaves(emp)
-    year_start, year_end_excl = get_leave_year_window(emp)
-
-    used_paid_by_type: dict[str, float] = {}
-    for lr in leaves:
-        if (lr.status or "").strip().upper() != LeaveRequest.STATUS_APPROVED:
-            continue
-        if not lr.is_paid:
-            continue
-
-        days = float(overlapping_days(lr, year_start, year_end_excl))
-        if days <= 0:
-            continue
-
-        key = (lr.leave_type or "").strip().upper()
-        used_paid_by_type[key] = float(used_paid_by_type.get(key, 0.0) + days)
-
-    carry = vacation_carry_forward(emp, year_start)
+    paid_used_by_type, _probation_total, _unpaid_total, carry, _ys, _ye = (
+        _aggregate_approved_usage(emp, leaves=leaves)
+    )
 
     remaining: dict[str, float] = {}
     limits = get_leave_limits_for_employee(emp)
@@ -311,7 +375,7 @@ def remaining_leaves(
         if leave_type_u == "VACATION":
             total_allowed += float(carry)
 
-        used = float(used_paid_by_type.get(leave_type_u, 0.0))
+        used = float(paid_used_by_type.get(leave_type_u, 0.0))
         remaining[leave_type_u] = round(max(total_allowed - used, 0.0), 1)
 
     return remaining

@@ -1,5 +1,5 @@
-from django.contrib.auth import authenticate
-from django.contrib.auth.models import User
+from django.contrib.auth import authenticate, get_user_model
+from django.core.exceptions import MultipleObjectsReturned
 from django.db import transaction
 from django.utils import timezone
 from django.contrib.auth.password_validation import validate_password
@@ -11,6 +11,8 @@ from form_app.policies import (
     get_leave_year_range_for_employee,
 )
 
+User = get_user_model()
+
 
 class LoginSerializer(serializers.Serializer):
     username = serializers.CharField()
@@ -18,7 +20,24 @@ class LoginSerializer(serializers.Serializer):
     email = serializers.EmailField(required=False)
 
     def validate(self, data):
-        user = authenticate(username=data["username"], password=data["password"])
+        username = (data.get("username") or "").strip()
+        password = data.get("password")
+
+        try:
+            matched_user = User.objects.get(username__iexact=username)
+        except User.DoesNotExist:
+            matched_user = None
+        except MultipleObjectsReturned:
+            raise serializers.ValidationError(
+                "Multiple accounts match this username. Please contact an administrator."
+            )
+
+        if not matched_user:
+            raise serializers.ValidationError("Invalid username or password")
+
+        # Authenticate using the stored canonical username so the auth backend
+        # remains unchanged while login becomes case-insensitive.
+        user = authenticate(username=matched_user.username, password=password)
 
         if not user:
             raise serializers.ValidationError("Invalid username or password")
@@ -72,7 +91,9 @@ class RegisterSerializer(serializers.ModelSerializer):
                 {"password": "Password must contain at least 1 symbol (e.g. @, #, !)."}
             )
 
-        if User.objects.filter(username=data["username"]).exists():
+        if User.objects.filter(
+            username__iexact=(data["username"] or "").strip()
+        ).exists():
             raise serializers.ValidationError({"username": "Username already exists"})
 
         if User.objects.filter(email=data["email"]).exists():
