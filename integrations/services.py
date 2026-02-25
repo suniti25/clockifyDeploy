@@ -107,7 +107,7 @@ def _build_event_body_for_day(leave: LeaveRequest, day) -> dict:
             "end": {"date": (day + timedelta(days=1)).isoformat()},
         }
 
-    # AM/PM => timed block
+    # AM/PM 
     start_t = time(9, 0) if session == "AM" else time(14, 0)
     end_t = time(13, 0) if session == "AM" else time(18, 0)
 
@@ -210,7 +210,7 @@ def sync_approved_leave_to_google(leave: LeaveRequest, user=None) -> bool:
     try:
         service = build("calendar", "v3", credentials=creds, cache_discovery=False)
 
-        # Delete old events (if any)
+        # Delete old events using SAME service 
         raw_old = (getattr(leave, "google_event_id", "") or "").strip()
         if raw_old:
             old_ids = [eid.strip() for eid in raw_old.split(",") if eid.strip()]
