@@ -134,7 +134,11 @@ def _delete_event_ids(service, calendar_id: str, event_ids: list[str]) -> None:
 
 def delete_leave_events_from_google(leave: LeaveRequest, user=None) -> bool:
     """
-    Deletes events referenced by leave.google_event_id and clears the field.
+    <<<<<<< HEAD
+    =======
+        Standalone delete helper (used on reject/void).
+    >>>>>>> origin/main
+        Deletes events referenced by leave.google_event_id and clears the field.
     """
     if not leave:
         return False
@@ -219,7 +223,7 @@ def sync_approved_leave_to_google(leave: LeaveRequest, user=None) -> bool:
             leave.google_event_id = ""
             leave.save(update_fields=["google_event_id"])
 
-        # Weekday dates only (Mon-Fri)
+        # weekday dates only
         start_date = leave.start_date
         end_date = leave.end_date or leave.start_date
         total = (end_date - start_date).days + 1
