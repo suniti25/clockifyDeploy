@@ -5,7 +5,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional, Tuple
 
 from django.db.models import CharField, F, Value
-from django.db.models.functions import Replace, Trim, Upper
+from django.db.models.functions import Coalesce, Replace, Trim, Upper
 from django.utils.timezone import localdate
 from rest_framework import serializers
 
@@ -143,15 +143,17 @@ def compute_paid_unpaid_split_for_request(
 
     status_norm = (getattr(req, "status", "") or "").strip().upper()
 
-    # We simulate consumption in chronological order so an already-approved leave
-    # gets a stable split based on what came before it.
-    approved_qs = LeaveRequest.objects.filter(
-        employee=employee,
-        leave_type=lt,
-        status="APPROVED",
-        start_date__lt=leave_year_end_excl,
-        end_date__gte=leave_year_start,
-    ).order_by("start_date", "end_date", "id")
+    approved_qs = (
+        LeaveRequest.objects.filter(
+            employee=employee,
+            leave_type=lt,
+            status="APPROVED",
+            start_date__lt=leave_year_end_excl,
+            end_date__gte=leave_year_start,
+        )
+        .annotate(_order_ts=Coalesce("approved_at", "applied_at"))
+        .order_by("_order_ts", "id", "start_date", "end_date")
+    )
 
     probation_end = getattr(employee, "probation_end_date", None)
     if probation_end:
@@ -389,6 +391,12 @@ def carry_forward_only(employee, prev_start: date, prev_end_exclusive: date) -> 
     if bool(getattr(employee, "reset_leave_balance", False)):
         return 0.0
 
+    joining_date = getattr(employee, "joining_date", None)
+    # Carry-forward applies only if the employee was employed for the
+    # Full previous leave year window.
+    if joining_date and joining_date > prev_start:
+        return 0.0
+
     limits = get_leave_limits_for_employee(employee)
     vacation_limit = float(limits.get("VACATION", 0.0))
 
@@ -444,5 +452,5 @@ def compute_paid_status(
         instance_id=instance_id,
     )
 
-    # "Paid" means: the entire request is within remaining balance.
+    # "Paid":The entire request is within remaining balance.
     return float(leave_days or 0.0) > 0.0 and unpaid_days <= 0.0

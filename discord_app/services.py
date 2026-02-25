@@ -378,7 +378,8 @@ def send_employee_on_leave_today():
     lines = [f"**On Leave Today — {today.strftime('%d %b %Y')}**"]
     for leave in qs:
         label = leave.get_leave_type_display()
-        if label.upper() not in ("WFH",):
+        lt = (getattr(leave, "leave_type", "") or "").strip().upper()
+        if lt != "WFH" and "LEAVE" not in (label or "").strip().upper():
             label = f"{label} Leave"
         lines.append(
             f"- {_employee_name(leave)} — {label} — {leave.get_session_display()}"
@@ -614,7 +615,7 @@ Your work from home request has been rejected.
 
 {details_text}
 
-Reason:
+Reason for rejection:
 {rejection_reason}
 
 Regards,
@@ -627,7 +628,7 @@ Avinto Admin Team
 <p>
     {details_html}
 </p>
-<p><strong>Reason:</strong><br/>{rejection_reason_html}</p>
+<p><strong>Reason for rejection:</strong><br/>{rejection_reason_html}</p>
 <p>Regards,<br/>Avinto Admin Team</p>
 """.strip()
     else:
@@ -639,7 +640,7 @@ Your leave request has been rejected.
 
 {details_text}
 
-Reason:
+Reason for rejection:
 {rejection_reason}
 
 Regards,
@@ -652,7 +653,7 @@ Avinto Admin Team
 <p>
     {details_html}
 </p>
-<p><strong>Reason:</strong><br/>{rejection_reason_html}</p>
+<p><strong>Reason for rejection:</strong><br/>{rejection_reason_html}</p>
 <p>Regards,<br/>Avinto Admin Team</p>
 """.strip()
 

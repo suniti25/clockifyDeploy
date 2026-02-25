@@ -58,7 +58,7 @@ class LeaveCreateSerializer(serializers.ModelSerializer):
         if not employee:
             raise serializers.ValidationError("Employee record not found.")
 
-        #  keep DB fields consistent (even if not used)
+        #  keep DB fields consistent
         validated_data["start_session"] = validated_data["session"]
         validated_data["end_session"] = validated_data["session"]
 

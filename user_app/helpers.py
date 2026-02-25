@@ -6,6 +6,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
 
 from django.db.models import Q
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.response import Response
@@ -42,6 +43,12 @@ def _round_to_half_day(value: float) -> float:
 def carry_forward_only(employee, prev_start: date, prev_end_exclusive: date) -> float:
 
     if bool(getattr(employee, "reset_leave_balance", False)):
+        return 0.0
+
+    joining_date = getattr(employee, "joining_date", None)
+    # Eligibility: carry-forward applies only if the employee was employed for the
+    # full previous leave year window.
+    if joining_date and joining_date > prev_start:
         return 0.0
 
     limits = get_leave_limits_for_employee(employee)
@@ -283,8 +290,10 @@ def _approved_requests_in_year(employee, ctx: LeaveYearContext):
 
 
 def _aggregate_approved_usage(employee, ctx: LeaveYearContext):
-    approved_qs = _approved_requests_in_year(employee, ctx).order_by(
-        "start_date", "end_date", "id"
+    approved_qs = (
+        _approved_requests_in_year(employee, ctx)
+        .annotate(_order_ts=Coalesce("approved_at", "applied_at"))
+        .order_by("_order_ts", "id", "start_date", "end_date")
     )
 
     paid_used_by_type: dict[str, float] = {}
