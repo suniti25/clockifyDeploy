@@ -121,6 +121,15 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
         required=False, allow_null=True, write_only=True
     )
 
+    # Optional per-employee manual used leave adjustments for the current leave year,
+    # e.g. {"VACATION": 5, "SICK": 1.5}. Stored under a reserved key in
+    # Employee.leave_limits_override.
+    manual_used_by_type = serializers.JSONField(required=False, allow_null=True)
+    # Compatibility for some frontends that send camelCase.
+    manualUsedByType = serializers.JSONField(
+        required=False, allow_null=True, write_only=True
+    )
+
     def validate(self, data: dict[str, Any]):
         employee_id = data["employee_id"]
 
@@ -257,6 +266,61 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
 
                 data["leave_limits_override"] = cleaned
 
+        # Normalize optional manual used adjustments (case-insensitive keys)
+        if "manual_used_by_type" not in data and "manualUsedByType" in data:
+            data["manual_used_by_type"] = data.get("manualUsedByType")
+
+        if "manual_used_by_type" in data:
+            used_map = data.get("manual_used_by_type")
+            if used_map is None:
+                pass
+            elif not isinstance(used_map, dict):
+                raise serializers.ValidationError(
+                    {
+                        "manual_used_by_type": "Must be an object mapping leave types to numbers."
+                    }
+                )
+            else:
+                allowed = set(str(k).strip().upper() for k in LEAVE_LIMITS.keys())
+                cleaned_used: dict[str, float] = {}
+                for raw_key, raw_val in used_map.items():
+                    if not isinstance(raw_key, str):
+                        raise serializers.ValidationError(
+                            {"manual_used_by_type": "All keys must be strings."}
+                        )
+
+                    key = raw_key.strip()
+                    if not key:
+                        raise serializers.ValidationError(
+                            {"manual_used_by_type": "Leave type keys cannot be empty."}
+                        )
+
+                    key_norm = key.upper()
+                    if key_norm not in allowed:
+                        raise serializers.ValidationError(
+                            {"manual_used_by_type": f"Invalid leave type '{key}'."}
+                        )
+
+                    try:
+                        num = float(raw_val)
+                    except (TypeError, ValueError):
+                        raise serializers.ValidationError(
+                            {
+                                "manual_used_by_type": f"Value for '{key}' must be a number."
+                            }
+                        )
+
+                    if num < 0:
+                        raise serializers.ValidationError(
+                            {
+                                "manual_used_by_type": f"Value for '{key}' cannot be negative."
+                            }
+                        )
+
+                    cleaned_used[key_norm] = num
+
+                data["manual_used_by_type"] = cleaned_used
+
         return data
 
     @transaction.atomic
@@ -338,6 +402,38 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
                     )
                 emp.leave_limits_override = merged
             updates.append("leave_limits_override")
+
+        if "manual_used_by_type" in data:
+            used_map = data.get("manual_used_by_type")
+            today = timezone.localdate()
+            year_start, _year_end_excl = get_leave_year_range_for_employee(
+                emp, on_date=today
+            )
+
+            existing = emp.leave_limits_override
+            if not isinstance(existing, dict):
+                existing = {}
+            merged = dict(existing)
+
+            by_year = merged.get("_manual_used_by_year")
+            if not isinstance(by_year, dict):
+                by_year = {}
+            by_year = dict(by_year)
+
+            key = year_start.isoformat()
+            if used_map is None:
+                by_year.pop(key, None)
+            else:
+                by_year[key] = dict(used_map)
+
+            if by_year:
+                merged["_manual_used_by_year"] = by_year
+            else:
+                merged.pop("_manual_used_by_year", None)
+
+            emp.leave_limits_override = merged
+            if "leave_limits_override" not in updates:
+                updates.append("leave_limits_override")
 
         # If joining_date changed and probation wasn't explicitly provided, keep existing behavior
         if (
@@ -468,7 +564,7 @@ class AllUsersDetailSerializer(serializers.ModelSerializer):
     def get_total_leave_this_year(self, obj):
         emp = getattr(obj, "employee", None)
         leaves = get_employee_leaves(emp) if emp else []
-        return float(total_leave_this_year(emp, leaves=leaves)) if emp else 0.0
+        return total_leave_this_year(emp, leaves=leaves) if emp else 0
 
     def get_leaves(self, obj):
         emp = getattr(obj, "employee", None)

@@ -21,6 +21,8 @@ from form_app.helpers import (
     display_is_paid,
     compute_paid_unpaid_split_for_request,
     _norm_status_expr,
+    get_manual_used_by_type,
+    fmt_leave_days,
 )
 from form_app.models import LeaveRequest
 
@@ -333,6 +335,20 @@ def _aggregate_approved_usage(employee, ctx: LeaveYearContext):
             ctx.vacation_carry
         )
 
+    # Apply admin-entered manual usage as baseline used days.
+    manual_used = get_manual_used_by_type(
+        employee=employee, leave_year_start=ctx.leave_year_start
+    )
+    for lt, allowed_total in total_allowed_by_type.items():
+        mu = float(manual_used.get(lt, 0.0) or 0.0)
+        if mu <= 0.0:
+            continue
+        if mu > float(allowed_total):
+            paid_used_by_type[lt] = float(allowed_total)
+            unpaid_leave_total += float(mu - float(allowed_total))
+        else:
+            paid_used_by_type[lt] = float(mu)
+
     for lr in approved_qs:
         days_in_window = float(
             form_overlapping_days(lr, ctx.leave_year_start, ctx.leave_year_end_excl)
@@ -388,7 +404,7 @@ def _leave_balance_list(
             "leave_year_end": ctx.leave_year_end_incl.isoformat(),
             "carry_forward": 0.0,
             "total": 0.0,
-            "used": round(probation_leave_total, 1),
+            "used": fmt_leave_days(probation_leave_total),
             "remaining": 0.0,
         },
         {
@@ -397,7 +413,7 @@ def _leave_balance_list(
             "leave_year_end": ctx.leave_year_end_incl.isoformat(),
             "carry_forward": 0.0,
             "total": 0.0,
-            "used": round(unpaid_leave_total, 1),
+            "used": fmt_leave_days(unpaid_leave_total),
             "remaining": 0.0,
         },
     ]
@@ -420,10 +436,10 @@ def _leave_balance_list(
                 "type": leave_type.capitalize(),
                 "leave_year_start": ctx.leave_year_start.isoformat(),
                 "leave_year_end": ctx.leave_year_end_incl.isoformat(),
-                "carry_forward": round(carry_forward, 1),
-                "total": round(total_allowed, 1),
-                "used": round(paid_used, 1),
-                "remaining": round(remaining, 1),
+                "carry_forward": fmt_leave_days(carry_forward),
+                "total": fmt_leave_days(total_allowed),
+                "used": fmt_leave_days(paid_used),
+                "remaining": fmt_leave_days(remaining),
             }
         )
 
@@ -444,9 +460,11 @@ def _serialize_upcoming(req: LeaveRequest) -> dict:
         "leave_type": label,
         "start_date": req.start_date.isoformat() if req.start_date else None,
         "end_date": req.end_date.isoformat() if req.end_date else None,
-        "days": float(req.total_days()) if hasattr(req, "total_days") else None,
-        "paid_days": float(paid_days),
-        "unpaid_days": float(unpaid_days),
+        "days": fmt_leave_days(float(req.total_days()))
+        if hasattr(req, "total_days")
+        else None,
+        "paid_days": fmt_leave_days(float(paid_days)),
+        "unpaid_days": fmt_leave_days(float(unpaid_days)),
         "status": (req.status or "").strip().upper(),
         "message": f"{label} leave upcoming",
     }

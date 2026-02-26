@@ -12,6 +12,8 @@ from form_app.helpers import (
     display_is_paid,
     _norm_status_expr,
     compute_paid_unpaid_split_for_request,
+    get_manual_used_by_type,
+    fmt_leave_days,
 )
 from form_app.models import LeaveRequest
 from form_app.policies import get_leave_limits_for_employee
@@ -244,7 +246,7 @@ def total_leave_this_year(emp, leaves: Optional[list[LeaveRequest]] = None) -> f
         + float(probation_total)
         + float(unpaid_total)
     )
-    return float(round(total, 1))
+    return fmt_leave_days(float(round(total, 1)))
 
 
 def _aggregate_approved_usage(
@@ -283,6 +285,18 @@ def _aggregate_approved_usage(
     paid_used_by_type: dict[str, float] = {}
     probation_total = 0.0
     unpaid_total = 0.0
+
+    # Apply admin-entered manual usage as baseline used days.
+    manual_used = get_manual_used_by_type(employee=emp, leave_year_start=year_start)
+    for lt, allowed_total in total_allowed_by_type.items():
+        mu = float(manual_used.get(lt, 0.0) or 0.0)
+        if mu <= 0.0:
+            continue
+        if mu > float(allowed_total):
+            paid_used_by_type[lt] = float(allowed_total)
+            unpaid_total += float(mu - float(allowed_total))
+        else:
+            paid_used_by_type[lt] = float(mu)
 
     joining_date = getattr(emp, "joining_date", None)
     probation_end_date = getattr(emp, "probation_end_date", None)
@@ -348,13 +362,12 @@ def used_leaves_by_type(
         _aggregate_approved_usage(emp, leaves=leaves)
     )
 
-    out: dict[str, float] = {
-        k: float(round(v, 1)) for k, v in paid_used_by_type.items()
+    out: dict[str, float | int] = {
+        k: fmt_leave_days(float(round(v, 1))) for k, v in paid_used_by_type.items()
     }
     if unpaid_total > 0:
-        out["UNPAID"] = float(
-            round(float(out.get("UNPAID", 0.0)) + float(unpaid_total), 1)
-        )
+        cur = float(out.get("UNPAID", 0.0) or 0.0)
+        out["UNPAID"] = fmt_leave_days(float(round(cur + float(unpaid_total), 1)))
     return out
 
 
@@ -380,7 +393,9 @@ def remaining_leaves(
             total_allowed += float(carry)
 
         used = float(paid_used_by_type.get(leave_type_u, 0.0))
-        remaining[leave_type_u] = round(max(total_allowed - used, 0.0), 1)
+        remaining[leave_type_u] = fmt_leave_days(
+            float(round(max(total_allowed - used, 0.0), 1))
+        )
 
     return remaining
 
@@ -402,7 +417,10 @@ def remaining_balance_for_type(emp, leave_type: str) -> Optional[float]:
     if leave_type_u == "VACATION":
         allowed += vacation_carry_forward(emp, year_start)
 
-    used = 0.0
+    manual_used = get_manual_used_by_type(
+        employee=emp, leave_year_start=year_start
+    ).get(leave_type_u, 0.0)
+    used = float(manual_used)
     qs = LeaveRequest.objects.filter(
         employee=emp,
         is_paid=True,
@@ -414,7 +432,7 @@ def remaining_balance_for_type(emp, leave_type: str) -> Optional[float]:
             continue
         used += float(overlapping_days(lr, year_start, year_end_excl))
 
-    return round(max(allowed - used, 0.0), 1)
+    return float(round(max(allowed - used, 0.0), 1))
 
 
 def serialize_request_for_frontend(lr: LeaveRequest) -> Dict[str, Any]:
@@ -461,11 +479,11 @@ def serialize_request_for_frontend(lr: LeaveRequest) -> Dict[str, Any]:
         "project": getattr(emp, "current_project", None) if emp else "",
         "start_date": lr.start_date.isoformat() if lr.start_date else None,
         "end_date": lr.end_date.isoformat() if lr.end_date else None,
-        "number_of_days": float(req_days),
-        "paid_days": float(paid_days),
-        "unpaid_days": float(unpaid_days),
-        "current_balance": current_balance,
-        "after_approval": after_approval,
+        "number_of_days": fmt_leave_days(float(req_days)),
+        "paid_days": fmt_leave_days(float(paid_days)),
+        "unpaid_days": fmt_leave_days(float(unpaid_days)),
+        "current_balance": fmt_leave_days(current_balance),
+        "after_approval": fmt_leave_days(after_approval),
         "appliedAt": lr.applied_at.isoformat() if lr.applied_at else None,
         "reason": (getattr(lr, "reason", "") or "").strip(),
         "rejection_reason": (getattr(lr, "rejection_reason", "") or "").strip(),

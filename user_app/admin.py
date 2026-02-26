@@ -80,15 +80,24 @@ class EmployeeAdmin(admin.ModelAdmin):
     list_select_related = ("user",)
 
     def probation_check(self, obj):
-        days = int(get_probation_days())
-        expected = (
-            obj.joining_date - timedelta(days=1)
-            if days <= 0
-            else obj.joining_date + timedelta(days=days - 1)
-        )
-        if obj.probation_end_date != expected:
-            return format_html("<b style='color:red;'>Mismatch</b>")
-        return "OK"
+        try:
+            if not getattr(obj, "joining_date", None) or not getattr(
+                obj, "probation_end_date", None
+            ):
+                return "N/A"
+
+            days = int(get_probation_days())
+            expected = (
+                obj.joining_date - timedelta(days=1)
+                if days <= 0
+                else obj.joining_date + timedelta(days=days - 1)
+            )
+            if obj.probation_end_date != expected:
+                return format_html("<b style='color:red;'>Mismatch</b>")
+            return "OK"
+        except Exception:
+            # Never break Django admin list view.
+            return "N/A"
 
     probation_check.short_description = "Probation (90d)"
 
