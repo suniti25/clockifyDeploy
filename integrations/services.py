@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 from datetime import timedelta
-from zoneinfo import ZoneInfo
 
 from django.conf import settings
 
@@ -12,8 +11,6 @@ from integrations.models import GoogleCalendarCredential
 
 logger = logging.getLogger(__name__)
 
-KTM_TZ = ZoneInfo("Asia/Kathmandu")
-KTM_TZ_NAME = "Asia/Kathmandu"
 GOOGLE_SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
 
 
