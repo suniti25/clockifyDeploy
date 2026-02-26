@@ -26,6 +26,25 @@ from form_app.models import LeaveRequest
 
 from .models import Profile
 
+
+_VACATION_CARRY_RESET_ON_KEY = "_vacation_carry_reset_on"
+
+
+def _vacation_carry_reset_on(employee) -> Optional[date]:
+    raw = getattr(employee, "leave_limits_override", None)
+    if not isinstance(raw, dict):
+        return None
+
+    v = raw.get(_VACATION_CARRY_RESET_ON_KEY)
+    if not v:
+        return None
+
+    try:
+        return date.fromisoformat(str(v)[:10])
+    except Exception:
+        return None
+
+
 # LEAVE YEAR HELPERS
 
 
@@ -45,9 +64,14 @@ def carry_forward_only(employee, prev_start: date, prev_end_exclusive: date) -> 
     if bool(getattr(employee, "reset_leave_balance", False)):
         return 0.0
 
+    # carry-forward from the previous year for the rest of this leave year.
+    reset_on = _vacation_carry_reset_on(employee)
+    if reset_on and reset_on >= prev_end_exclusive:
+        return 0.0
+
     joining_date = getattr(employee, "joining_date", None)
-    # Eligibility: carry-forward applies only if the employee was employed for the
-    # full previous leave year window.
+
+    # Carry-forward applies only if the employee was employed for the
     if joining_date and joining_date > prev_start:
         return 0.0
 

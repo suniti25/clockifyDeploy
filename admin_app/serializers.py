@@ -329,6 +329,13 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
                     existing = {}
                 merged = dict(existing)
                 merged.update(overrides)
+
+                # If admin sets Vacation explicitly, suppress prior-year carry-forward
+                # for the remainder of the current leave year.
+                if "VACATION" in overrides:
+                    merged["_vacation_carry_reset_on"] = (
+                        timezone.localdate().isoformat()
+                    )
                 emp.leave_limits_override = merged
             updates.append("leave_limits_override")
 
