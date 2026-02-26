@@ -59,3 +59,9 @@ class LeavePolicySettingsAdmin(admin.ModelAdmin):
         "bereavement_days",
         "updated_at",
     )
+
+    def has_add_permission(self, request):
+        return not LeavePolicySettings.objects.exists()
+
+    def has_delete_permission(self, request, obj=None):
+        return False
