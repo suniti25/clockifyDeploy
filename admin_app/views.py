@@ -7,7 +7,7 @@ from django.contrib.auth.models import User
 from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import transaction
-from django.db.models import Prefetch
+from django.db.models import Prefetch, Q
 from django.db.models.deletion import ProtectedError
 from django.utils import timezone
 
@@ -211,11 +211,51 @@ class AllUsersDetailView(APIView):
 
     @extend_schema(
         description="List all users with profile/employee and prefetched leave requests.",
+        parameters=[
+            OpenApiParameter(
+                name="search",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                required=False,
+            )
+        ],
         responses={200: AllUsersDetailSerializer(many=True)},
     )
     def get(self, request):
         leaves_qs = LeaveRequest.objects.order_by("-applied_at", "-id")
-        users = User.objects.select_related("profile", "employee").prefetch_related(
+        params = request.GET
+        raw_search = (
+            (params.get("search") or "")
+            or (params.get("q") or "")
+            or (params.get("name") or "")
+        )
+        search = (raw_search or "").strip()
+
+        users = User.objects.select_related("profile", "employee")
+
+        if search:
+            terms = [t for t in search.split() if t]
+            if len(terms) >= 2:
+                first = terms[0]
+                last = terms[-1]
+                full_name_q = (
+                    Q(first_name__icontains=first) & Q(last_name__icontains=last)
+                ) | (Q(first_name__icontains=last) & Q(last_name__icontains=first))
+            else:
+                full_name_q = Q(first_name__icontains=search) | Q(
+                    last_name__icontains=search
+                )
+
+            users = users.filter(
+                Q(employee__name__icontains=search)
+                | Q(first_name__icontains=search)
+                | Q(last_name__icontains=search)
+                | full_name_q
+                | Q(username__icontains=search)
+                | Q(email__icontains=search)
+            ).distinct()
+
+        users = users.prefetch_related(
             Prefetch(
                 "employee__leave_requests",
                 queryset=leaves_qs,
@@ -276,19 +316,57 @@ class EmployeesByRoleView(APIView):
 
     @extend_schema(
         description="List employee users (profile role=EMPLOYEE) with prefetched leave requests.",
+        parameters=[
+            OpenApiParameter(
+                name="search",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                required=False,
+            )
+        ],
         responses={200: AllUsersDetailSerializer(many=True)},
     )
     def get(self, request):
         leaves_qs = LeaveRequest.objects.order_by("-applied_at", "-id")
-        users = (
-            User.objects.filter(profile__role="EMPLOYEE")
-            .select_related("profile", "employee")
-            .prefetch_related(
-                Prefetch(
-                    "employee__leave_requests",
-                    queryset=leaves_qs,
-                    to_attr="prefetched_leaves",
+        params = request.GET
+        raw_search = (
+            (params.get("search") or "")
+            or (params.get("q") or "")
+            or (params.get("name") or "")
+        )
+        search = (raw_search or "").strip()
+
+        users = User.objects.filter(profile__role="EMPLOYEE").select_related(
+            "profile", "employee"
+        )
+
+        if search:
+            terms = [t for t in search.split() if t]
+            if len(terms) >= 2:
+                first = terms[0]
+                last = terms[-1]
+                full_name_q = (
+                    Q(first_name__icontains=first) & Q(last_name__icontains=last)
+                ) | (Q(first_name__icontains=last) & Q(last_name__icontains=first))
+            else:
+                full_name_q = Q(first_name__icontains=search) | Q(
+                    last_name__icontains=search
                 )
+
+            users = users.filter(
+                Q(employee__name__icontains=search)
+                | Q(first_name__icontains=search)
+                | Q(last_name__icontains=search)
+                | full_name_q
+                | Q(username__icontains=search)
+                | Q(email__icontains=search)
+            ).distinct()
+
+        users = users.prefetch_related(
+            Prefetch(
+                "employee__leave_requests",
+                queryset=leaves_qs,
+                to_attr="prefetched_leaves",
             )
         )
         return Response(
