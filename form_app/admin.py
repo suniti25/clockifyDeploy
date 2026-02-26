@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.contrib import messages
 
-from .models import LeaveRequest
+from .models import LeavePolicySettings, LeaveRequest
 from integrations.services import sync_approved_leave_to_google
 
 
@@ -43,3 +43,19 @@ class LeaveRequestAdmin(admin.ModelAdmin):
         "employee__name",
     )
     actions = [sync_selected_leaves_to_google]
+
+
+@admin.register(LeavePolicySettings)
+class LeavePolicySettingsAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "global_renewal_date",
+        "carryover_percentage",
+        "probation_period_days",
+        "vacation_days",
+        "sick_days",
+        "maternity_days",
+        "paternity_days",
+        "bereavement_days",
+        "updated_at",
+    )
