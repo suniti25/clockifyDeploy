@@ -26,7 +26,7 @@ def _to_int(value: Optional[int], default: int) -> int:
 
 
 def get_leave_policy_settings() -> LeavePolicySettings:
-    settings = LeavePolicySettings.objects.first()
+    settings = LeavePolicySettings.objects.order_by("-updated_at", "-id").first()
     if settings:
         return settings
     return LeavePolicySettings.objects.create()
@@ -95,7 +95,11 @@ def get_probation_days() -> int:
 
 
 def compute_probation_end_date(joining_date: date) -> date:
-    return joining_date + timedelta(days=get_probation_days())
+
+    days = int(get_probation_days())
+    if days <= 0:
+        return joining_date - timedelta(days=1)
+    return joining_date + timedelta(days=days - 1)
 
 
 def _year_reset(year: int, month: int, day: int) -> date:

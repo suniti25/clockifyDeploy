@@ -113,6 +113,14 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
     probation_end_date = serializers.DateField(required=False)
     probation_period_days = serializers.IntegerField(required=False, min_value=0)
 
+    # Optional per-employee leave limit overrides, e.g. {"VACATION": 18}
+    # Use null to clear overrides.
+    leave_limits_override = serializers.JSONField(required=False, allow_null=True)
+    # Compatibility for some frontends that send camelCase.
+    leaveLimitsOverride = serializers.JSONField(
+        required=False, allow_null=True, write_only=True
+    )
+
     def validate(self, data: dict[str, Any]):
         employee_id = data["employee_id"]
 
@@ -191,6 +199,64 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
                     }
                 )
 
+        # Normalize optional leave limits override (case-insensitive keys)
+        if "leave_limits_override" not in data and "leaveLimitsOverride" in data:
+            data["leave_limits_override"] = data.get("leaveLimitsOverride")
+
+        if "leave_limits_override" in data:
+            overrides = data.get("leave_limits_override")
+            if overrides is None:
+                # explicit clear
+                pass
+            elif not isinstance(overrides, dict):
+                raise serializers.ValidationError(
+                    {
+                        "leave_limits_override": "Must be an object mapping leave types to numbers."
+                    }
+                )
+            else:
+                allowed = set(str(k).strip().upper() for k in LEAVE_LIMITS.keys())
+                cleaned: dict[str, float] = {}
+                for raw_key, raw_val in overrides.items():
+                    if not isinstance(raw_key, str):
+                        raise serializers.ValidationError(
+                            {"leave_limits_override": "All keys must be strings."}
+                        )
+
+                    key = raw_key.strip()
+                    if not key:
+                        raise serializers.ValidationError(
+                            {
+                                "leave_limits_override": "Leave type keys cannot be empty."
+                            }
+                        )
+
+                    key_norm = key.upper()
+                    if key_norm not in allowed:
+                        raise serializers.ValidationError(
+                            {"leave_limits_override": f"Invalid leave type '{key}'."}
+                        )
+
+                    try:
+                        num = float(raw_val)
+                    except (TypeError, ValueError):
+                        raise serializers.ValidationError(
+                            {
+                                "leave_limits_override": f"Value for '{key}' must be a number."
+                            }
+                        )
+
+                    if num < 0:
+                        raise serializers.ValidationError(
+                            {
+                                "leave_limits_override": f"Value for '{key}' cannot be negative."
+                            }
+                        )
+
+                    cleaned[key_norm] = num
+
+                data["leave_limits_override"] = cleaned
+
         return data
 
     @transaction.atomic
@@ -245,8 +311,26 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
         if "probation_period_days" in data:
             days = data.get("probation_period_days")
             # compute end date from current joining date
-            emp.probation_end_date = emp.joining_date + timedelta(days=int(days))
+            d = int(days)
+            emp.probation_end_date = (
+                emp.joining_date - timedelta(days=1)
+                if d <= 0
+                else emp.joining_date + timedelta(days=d - 1)
+            )
             updates.append("probation_end_date")
+
+        if "leave_limits_override" in data:
+            overrides = data.get("leave_limits_override")
+            if overrides is None:
+                emp.leave_limits_override = None
+            else:
+                existing = emp.leave_limits_override
+                if not isinstance(existing, dict):
+                    existing = {}
+                merged = dict(existing)
+                merged.update(overrides)
+                emp.leave_limits_override = merged
+            updates.append("leave_limits_override")
 
         # If joining_date changed and probation wasn't explicitly provided, keep existing behavior
         if (
@@ -624,9 +708,7 @@ class AdminUserUpdateSerializer(serializers.Serializer):
                 for raw_key, raw_val in overrides.items():
                     if not isinstance(raw_key, str):
                         raise serializers.ValidationError(
-                            {
-                                "leave_limits_override": "All keys must be strings (uppercase leave types)."
-                            }
+                            {"leave_limits_override": "All keys must be strings."}
                         )
                     key = raw_key.strip()
                     if not key:
@@ -636,14 +718,8 @@ class AdminUserUpdateSerializer(serializers.Serializer):
                             }
                         )
 
-                    if key != key.upper():
-                        raise serializers.ValidationError(
-                            {
-                                "leave_limits_override": f"Leave type '{key}' must be uppercase."
-                            }
-                        )
-
-                    if key not in allowed:
+                    key_norm = key.upper()
+                    if key_norm not in allowed:
                         raise serializers.ValidationError(
                             {"leave_limits_override": f"Invalid leave type '{key}'."}
                         )
@@ -664,7 +740,7 @@ class AdminUserUpdateSerializer(serializers.Serializer):
                             }
                         )
 
-                    cleaned[key] = num
+                    cleaned[key_norm] = num
 
                 data["leave_limits_override"] = cleaned
 
