@@ -21,6 +21,73 @@ MAX_LEAVE_DAYS = 60
 
 
 _VACATION_CARRY_RESET_ON_KEY = "_vacation_carry_reset_on"
+_MANUAL_USED_BY_YEAR_KEY = "_manual_used_by_year"
+
+
+def fmt_leave_days(value):
+    """Format leave day counts for JSON/UI.
+
+    - Whole numbers return as int (e.g., 5 not 5.0)
+    - Half-days keep one decimal (e.g., 6.5)
+    """
+
+    if value is None:
+        return None
+
+    try:
+        x = float(value)
+    except (TypeError, ValueError):
+        return value
+
+    # Avoid -0.0
+    if abs(x) < 1e-9:
+        x = 0.0
+
+    if abs(x - round(x)) < 1e-9:
+        return int(round(x))
+    return float(round(x, 1))
+
+
+def get_manual_used_by_type(*, employee, leave_year_start: date) -> dict[str, float]:
+    """Return admin-specified extra used days for the given leave year.
+
+    Stored on Employee.leave_limits_override under:
+      {"_manual_used_by_year": {"YYYY-MM-DD": {"VACATION": 5, ...}}}
+    """
+
+    raw = getattr(employee, "leave_limits_override", None)
+    if not isinstance(raw, dict):
+        return {}
+
+    by_year = raw.get(_MANUAL_USED_BY_YEAR_KEY)
+    if not isinstance(by_year, dict):
+        return {}
+
+    key = leave_year_start.isoformat() if leave_year_start else None
+    if not key:
+        return {}
+
+    used_map = by_year.get(key)
+    if not isinstance(used_map, dict):
+        return {}
+
+    out: dict[str, float] = {}
+    for k, v in used_map.items():
+        if not isinstance(k, str):
+            continue
+        lt = normalize_leave_type(k)
+        if not lt:
+            continue
+        try:
+            num = float(v)
+        except (TypeError, ValueError):
+            continue
+        if num < 0:
+            continue
+        # Keep consistent half-day rounding behavior.
+        out[lt] = float(_round_to_half_day(num))
+
+    return out
 
 
 def _vacation_carry_reset_on(employee) -> Optional[date]:
@@ -94,6 +161,10 @@ def compute_paid_unpaid_split(
 
     total_allowed = float(limits[leave_type]) + float(vacation_carry)
 
+    manual_used = get_manual_used_by_type(
+        employee=employee, leave_year_start=leave_year_start
+    ).get(leave_type, 0.0)
+
     approved_qs = LeaveRequest.objects.filter(
         employee=employee,
         leave_type=leave_type,
@@ -113,6 +184,7 @@ def compute_paid_unpaid_split(
         overlapping_days(lr, leave_year_start, leave_year_end_excl)
         for lr in approved_qs
     )
+    used_days = float(used_days) + float(manual_used)
     remaining = max(total_allowed - float(used_days), 0.0)
 
     paid_days = min(float(leave_days), float(remaining))
@@ -158,7 +230,10 @@ def compute_paid_unpaid_split_for_request(
         vacation_carry = float(carry_forward_only(employee, prev_start, prev_end_excl))
 
     total_allowed = float(limits[lt]) + float(vacation_carry)
-    remaining = float(total_allowed)
+    manual_used = get_manual_used_by_type(
+        employee=employee, leave_year_start=leave_year_start
+    ).get(lt, 0.0)
+    remaining = max(float(total_allowed) - float(manual_used), 0.0)
 
     status_norm = (getattr(req, "status", "") or "").strip().upper()
 
