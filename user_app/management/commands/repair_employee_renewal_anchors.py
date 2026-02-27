@@ -12,9 +12,9 @@ from user_app.models import Employee
 
 class Command(BaseCommand):
     help = (
-        "Repair employee renewal anchors and (optionally) joining/probation dates.\n\n"
+        "Repair employee renewal anchors and joining/probation dates.\n\n"
         "Renewal calculations use Employee.leave_renewal_date_override as a month/day anchor when set. "
-        "If overrides were set unintentionally (e.g. to today's date), some employees can show an incorrect "
+        "If overrides were set unintentionally, some employees can show an incorrect "
         "next renewal date. This command clears mismatched overrides so renewals align with the default policy "
         "(probation_end_date + 1 day)."
     )
