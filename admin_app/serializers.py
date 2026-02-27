@@ -441,10 +441,12 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
             days = data.get("probation_period_days")
             # compute end date from current joining date
             d = int(days)
+            # Keep consistent with form_app.policies.compute_probation_end_date:
+            # probation_end_date is treated as an exclusive boundary.
             ped = (
                 emp.joining_date - timedelta(days=1)
                 if d <= 0
-                else emp.joining_date + timedelta(days=d - 1)
+                else emp.joining_date + timedelta(days=d)
             )
             emp.probation_end_date = ped
             updates.append("probation_end_date")
@@ -452,20 +454,40 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
 
         if "is_on_probation" in data:
             on_prob = bool(data.get("is_on_probation"))
+            today = timezone.localdate()
+            current_joining_date = getattr(emp, "joining_date", None)
+            current_effective_end = get_effective_probation_end_date(emp)
+            currently_on_probation = bool(
+                current_joining_date
+                and current_effective_end
+                and current_joining_date <= today < current_effective_end
+            )
+
             if not on_prob:
-                # End probation as of yesterday (local date), so they're not on
-                # probation today.
-                ped = timezone.localdate() - timedelta(days=1)
-                # Defensive: if joining_date is unexpectedly after the target date,
-                # fall back to "no probation" (joining_date - 1).
-                if getattr(emp, "joining_date", None) and emp.joining_date > ped:
-                    ped = emp.joining_date - timedelta(days=1)
-                emp.probation_end_date = ped
-                if "probation_end_date" not in updates:
-                    updates.append("probation_end_date")
-                _set_probation_override_marker(ped)
+                # Interpret "false" as "ensure employee is not on probation".
+                # If they're currently on probation, end it as of yesterday.
+                # If they're already not on probation, do NOT overwrite their
+                # probation_end_date to a moving target (yesterday) because that
+                # shifts the leave-year anchor and breaks renewal calculations.
+                if currently_on_probation:
+                    ped = today - timedelta(days=1)
+                    if current_joining_date and current_joining_date > ped:
+                        ped = current_joining_date - timedelta(days=1)
+                    emp.probation_end_date = ped
+                    if "probation_end_date" not in updates:
+                        updates.append("probation_end_date")
+                    _set_probation_override_marker(ped)
+                else:
+                    # Already not on probation: revert to policy-derived value
+                    # and clear any prior explicit override marker.
+                    ped = compute_probation_end_date(emp.joining_date)
+                    emp.probation_end_date = ped
+                    if "probation_end_date" not in updates:
+                        updates.append("probation_end_date")
+                    _set_probation_override_marker(None)
             else:
-                # Clear override and revert to policy-derived value.
+                # "true" means "put them on policy-derived probation".
+                # Clear explicit overrides and recompute from joining_date.
                 ped = compute_probation_end_date(emp.joining_date)
                 emp.probation_end_date = ped
                 if "probation_end_date" not in updates:
