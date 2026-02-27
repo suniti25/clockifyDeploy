@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import timedelta
-
 from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.utils import timezone
@@ -16,7 +14,7 @@ class Command(BaseCommand):
         "Renewal calculations use Employee.leave_renewal_date_override as a month/day anchor when set. "
         "If overrides were set unintentionally, some employees can show an incorrect "
         "next renewal date. This command clears mismatched overrides so renewals align with the default policy "
-        "(probation_end_date + 1 day)."
+        "(probation_end_date month/day)."
     )
 
     def add_arguments(self, parser):
@@ -47,7 +45,15 @@ class Command(BaseCommand):
             default=True,
             help=(
                 "Clear leave_renewal_date_override when its month/day doesn't match the "
-                "computed anchor (probation_end_date + 1 day). Enabled by default."
+                "computed anchor (probation_end_date month/day). Enabled by default."
+            ),
+        )
+        parser.add_argument(
+            "--no-clear-mismatched-overrides",
+            action="store_false",
+            dest="clear_mismatched_overrides",
+            help=(
+                "Do not clear leave_renewal_date_override values (useful when you intentionally maintain per-employee exceptions)."
             ),
         )
 
@@ -79,12 +85,25 @@ class Command(BaseCommand):
                     return None
 
         def _anchor_from_employee(emp: Employee):
-            probation_end = getattr(emp, "probation_end_date", None)
             joining_date = getattr(emp, "joining_date", None)
+            probation_end = getattr(emp, "probation_end_date", None)
+
+            # Default renewal anchor is the employee's probation end month/day.
+            # If probation_end_date is missing, compute it from joining_date.
+            # If probation was explicitly ended early by setting probation_end_date < joining_date
+            # (e.g. joining_date - 1), treat it as "no probation" and anchor to joining_date.
+            if joining_date and probation_end and probation_end < joining_date:
+                return joining_date
+
             if probation_end:
-                return probation_end + timedelta(days=1)
+                return probation_end
+
             if joining_date:
-                return compute_probation_end_date(joining_date) + timedelta(days=1)
+                try:
+                    return compute_probation_end_date(joining_date)
+                except Exception:
+                    return joining_date
+
             return None
 
         changes_preview: list[str] = []

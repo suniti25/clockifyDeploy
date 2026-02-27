@@ -110,7 +110,10 @@ def compute_probation_end_date(joining_date: date) -> date:
     days = int(get_probation_days())
     if days <= 0:
         return joining_date - timedelta(days=1)
-    return joining_date + timedelta(days=days - 1)
+    # Treat probation_end_date as an exclusive end boundary.
+    # Example: joining_date=2024-01-01, days=90 -> probation_end_date=2024-03-31,
+    # and dates [2024-01-01, 2024-03-31) are considered "in probation".
+    return joining_date + timedelta(days=days)
 
 
 def get_effective_probation_end_date(employee) -> Optional[date]:
@@ -189,12 +192,26 @@ def get_leave_year_range_for_employee(
     if anchor:
         anchor_month, anchor_day = anchor
     else:
+        joining_date = getattr(employee, "joining_date", None)
         probation_end = get_effective_probation_end_date(employee)
-        if not probation_end:
+
+        # Default behavior: renew yearly on the employee's probation end month/day.
+        # If probation was explicitly ended early by setting probation_end_date < joining_date
+        # (e.g. joining_date - 1), treat it as "no probation" and anchor to joining_date.
+        anchor_date = None
+        if joining_date and probation_end and probation_end < joining_date:
+            anchor_date = joining_date
+        elif probation_end:
+            anchor_date = probation_end
+        elif joining_date:
+            anchor_date = joining_date
+
+        if not anchor_date:
+            # Fallback for incomplete rows.
             start = date(on_date.year, 1, 1)
             end_excl = date(on_date.year + 1, 1, 1)
             return start, end_excl
-        anchor_date = probation_end + timedelta(days=1)
+
         anchor_month, anchor_day = anchor_date.month, anchor_date.day
 
     start_this_year = _year_reset(on_date.year, anchor_month, anchor_day)

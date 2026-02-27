@@ -112,7 +112,7 @@ def _is_probation_leave(*, employee, leave_start: date) -> bool:
     if not probation_end:
         return False
     try:
-        return bool(leave_start and leave_start <= probation_end)
+        return bool(leave_start and leave_start < probation_end)
     except Exception:
         return False
 
@@ -176,7 +176,7 @@ def compute_paid_unpaid_split(
 
     probation_end = get_effective_probation_end_date(employee)
     if probation_end:
-        approved_qs = approved_qs.filter(start_date__gt=probation_end)
+        approved_qs = approved_qs.filter(start_date__gte=probation_end)
 
     if instance_id:
         approved_qs = approved_qs.exclude(id=instance_id)
@@ -252,7 +252,7 @@ def compute_paid_unpaid_split_for_request(
 
     probation_end = get_effective_probation_end_date(employee)
     if probation_end:
-        approved_qs = approved_qs.filter(start_date__gt=probation_end)
+        approved_qs = approved_qs.filter(start_date__gte=probation_end)
 
     if status_norm != "APPROVED":
         # Pending/rejected/voided: request hasn't consumed yet.
@@ -549,7 +549,7 @@ def compute_paid_status(
 
     # probation => always unpaid
     probation_end = get_effective_probation_end_date(employee)
-    if probation_end and start_date <= probation_end:
+    if probation_end and start_date < probation_end:
         return False
 
     _paid_days, unpaid_days, _remaining = compute_paid_unpaid_split(

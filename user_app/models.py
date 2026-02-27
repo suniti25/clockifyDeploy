@@ -50,7 +50,7 @@ class Employee(models.Model):
         joining_date = getattr(self, "joining_date", None)
         if not joining_date or not probation_end:
             return False
-        return joining_date <= on_date <= probation_end
+        return joining_date <= on_date < probation_end
 
     def __str__(self) -> str:
         return self.user.get_full_name() or self.user.username

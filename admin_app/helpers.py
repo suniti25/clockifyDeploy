@@ -320,7 +320,7 @@ def _aggregate_approved_usage(
             bool(joining_date)
             and bool(probation_end_date)
             and bool(getattr(lr, "start_date", None))
-            and joining_date <= lr.start_date <= probation_end_date
+            and joining_date <= lr.start_date < probation_end_date
         )
         if in_probation:
             probation_total += days

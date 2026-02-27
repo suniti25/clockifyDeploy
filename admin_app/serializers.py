@@ -84,7 +84,7 @@ class EmployeeDetailSerializer(serializers.ModelSerializer):
         joining_date = getattr(obj, "joining_date", None)
         probation_end = get_effective_probation_end_date(obj)
         return bool(
-            joining_date and probation_end and joining_date <= today <= probation_end
+            joining_date and probation_end and joining_date <= today < probation_end
         )
 
     def get_probation_period_days(self, obj):

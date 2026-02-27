@@ -294,7 +294,7 @@ def _build_leave_year_context(employee) -> LeaveYearContext:
     is_on_probation = (
         bool(joining_date)
         and bool(probation_end)
-        and bool(joining_date <= today <= probation_end)
+        and bool(joining_date <= today < probation_end)
     )
 
     vacation_carry = 0.0
@@ -377,7 +377,7 @@ def _aggregate_approved_usage(employee, ctx: LeaveYearContext):
             bool(joining_date)
             and bool(probation_end)
             and bool(getattr(lr, "start_date", None))
-            and joining_date <= lr.start_date <= probation_end
+            and joining_date <= lr.start_date < probation_end
         )
 
         if in_probation:
@@ -415,7 +415,7 @@ def _leave_balance_list(
             "type": "Probation Leave",
             "leave_year_start": ctx.leave_year_start.isoformat(),
             "leave_year_end": ctx.leave_year_end_incl.isoformat(),
-            "renewal_on": ctx.leave_year_end_incl.isoformat(),
+            "renewal_on": ctx.leave_year_end_excl.isoformat(),
             "renewal_value": fmt_leave_days(0.0),
             "carry_forward": 0.0,
             "total": 0.0,
@@ -426,7 +426,7 @@ def _leave_balance_list(
             "type": "Unpaid Leave",
             "leave_year_start": ctx.leave_year_start.isoformat(),
             "leave_year_end": ctx.leave_year_end_incl.isoformat(),
-            "renewal_on": ctx.leave_year_end_incl.isoformat(),
+            "renewal_on": ctx.leave_year_end_excl.isoformat(),
             "renewal_value": fmt_leave_days(0.0),
             "carry_forward": 0.0,
             "total": 0.0,
@@ -458,7 +458,7 @@ def _leave_balance_list(
                 "type": leave_type.capitalize(),
                 "leave_year_start": ctx.leave_year_start.isoformat(),
                 "leave_year_end": ctx.leave_year_end_incl.isoformat(),
-                "renewal_on": ctx.leave_year_end_incl.isoformat(),
+                "renewal_on": ctx.leave_year_end_excl.isoformat(),
                 "renewal_value": fmt_leave_days(limit_num),
                 "carry_forward": fmt_leave_days(carry_forward),
                 "total": fmt_leave_days(total_allowed),
