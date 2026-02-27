@@ -985,6 +985,10 @@ class EmployeeRenewalScheduleSerializer(serializers.Serializer):
     joining_date = serializers.DateField(read_only=True)
     probation_end_date = serializers.DateField(read_only=True)
     leave_renewal_date_override = serializers.DateField(read_only=True)
+    leave_renewal_override_set_by = serializers.CharField(
+        source="leave_renewal_override_set_by.username", read_only=True
+    )
+    leave_renewal_override_set_at = serializers.DateTimeField(read_only=True)
     next_renewal_date = serializers.DateField(read_only=True)
 
 

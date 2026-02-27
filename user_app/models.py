@@ -20,6 +20,15 @@ class Employee(models.Model):
 
     leave_renewal_date_override = models.DateField(null=True, blank=True)
 
+    leave_renewal_override_set_by = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="renewal_override_changes",
+    )
+    leave_renewal_override_set_at = models.DateTimeField(null=True, blank=True)
+
     # Per-employee leave limit overrides,
     # Keys are expected to be uppercase leave type names.
     leave_limits_override = models.JSONField(blank=True, null=True)

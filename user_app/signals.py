@@ -20,7 +20,17 @@ def ensure_profile_and_employee_exist(sender, instance, created, **kwargs):
     )
 
     if role == "EMPLOYEE":
-        joining_date = timezone.localdate()
+        # Prefer the user's creation date as a stable default joining date.
+        # Using "today" here causes renewals to be anchored incorrectly for users
+        # whose Employee record is created later than their account.
+        try:
+            joining_date = (
+                timezone.localtime(instance.date_joined).date()
+                if instance.date_joined
+                else timezone.localdate()
+            )
+        except Exception:
+            joining_date = timezone.localdate()
         employee, _ = Employee.objects.get_or_create(
             user=instance,
             defaults={
