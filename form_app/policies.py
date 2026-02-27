@@ -127,6 +127,19 @@ def get_effective_probation_end_date(employee) -> Optional[date]:
     if not joining_date:
         return stored
 
+    # Per-employee probation override.
+    # We historically treated the computed probation end date as source of truth
+    # whenever joining_date was present because some rows had incorrect persisted
+    # probation_end_date values.
+    # To support cases where an admin intentionally ends probation early for a
+    # specific employee, we allow an explicit override marker stored under a
+    # reserved key in Employee.leave_limits_override.
+    raw_overrides = getattr(employee, "leave_limits_override", None)
+    has_probation_override = bool(
+        isinstance(raw_overrides, dict)
+        and raw_overrides.get("_probation_end_date_override")
+    )
+
     try:
         expected = compute_probation_end_date(joining_date)
     except Exception:
@@ -136,11 +149,18 @@ def get_effective_probation_end_date(employee) -> Optional[date]:
         return expected
     try:
         if stored < joining_date:
+            # Allow an explicit "no probation" override by storing joining_date - 1.
+            if has_probation_override and stored == joining_date - timedelta(days=1):
+                return stored
             return expected
     except Exception:
         return expected
 
-    # If a persisted value exists but diverges from policy, prefer policy.
+    # If admin explicitly set an override, respect the persisted value.
+    if has_probation_override:
+        return stored
+
+    # Otherwise, preserve legacy behavior: computed policy is source of truth.
     return expected if stored != expected else stored
 
 

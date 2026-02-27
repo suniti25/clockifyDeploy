@@ -104,7 +104,13 @@ class Command(BaseCommand):
                         joining_updates += 1
 
                 joining_date = getattr(emp, "joining_date", None)
-                if fix_probation_end and joining_date:
+                overrides = getattr(emp, "leave_limits_override", None)
+                has_probation_override = bool(
+                    isinstance(overrides, dict)
+                    and overrides.get("_probation_end_date_override")
+                )
+
+                if fix_probation_end and joining_date and not has_probation_override:
                     expected_prob_end = compute_probation_end_date(joining_date)
                     if getattr(emp, "probation_end_date", None) != expected_prob_end:
                         updates.append("probation_end_date")

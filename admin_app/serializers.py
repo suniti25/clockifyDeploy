@@ -114,6 +114,14 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
     project_id = serializers.IntegerField(required=False)
     joining_date = serializers.DateField(required=False)
 
+    # Some frontends treat probation as a boolean toggle.
+    # When provided, we translate it into an explicit probation_end_date override.
+    is_on_probation = serializers.BooleanField(required=False)
+    # Compatibility for some frontends that send camelCase.
+    isOnProbation = serializers.BooleanField(required=False, write_only=True)
+    on_probation = serializers.BooleanField(required=False, write_only=True)
+    onProbation = serializers.BooleanField(required=False, write_only=True)
+
     # probation can be supplied either as a concrete end date or as days from joining date
     probation_end_date = serializers.DateField(required=False)
     probation_period_days = serializers.IntegerField(required=False, min_value=0)
@@ -137,6 +145,23 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
 
     def validate(self, data: dict[str, Any]):
         employee_id = data["employee_id"]
+        if "is_on_probation" not in data and "isOnProbation" in data:
+            data["is_on_probation"] = data.get("isOnProbation")
+
+        if "is_on_probation" not in data and "on_probation" in data:
+            data["is_on_probation"] = data.get("on_probation")
+
+        if "is_on_probation" not in data and "onProbation" in data:
+            data["is_on_probation"] = data.get("onProbation")
+
+        if "is_on_probation" in data and (
+            "probation_end_date" in data or "probation_period_days" in data
+        ):
+            raise serializers.ValidationError(
+                {
+                    "is_on_probation": "Provide either is_on_probation OR probation_end_date/probation_period_days, not both."
+                }
+            )
 
         emp = Employee.objects.select_related("user").filter(id=employee_id).first()
         if not emp:
@@ -206,7 +231,9 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
         probation_end_date = data.get("probation_end_date")
         # If joining_date is not being updated, we'll validate against existing joining_date during update
         if joining_date is not None and probation_end_date is not None:
-            if probation_end_date < joining_date:
+            if probation_end_date < joining_date and probation_end_date != (
+                joining_date - timedelta(days=1)
+            ):
                 raise serializers.ValidationError(
                     {
                         "probation_end_date": "Probation end date cannot be before joining date."
@@ -351,6 +378,34 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
 
         updates = []
 
+        probation_override_touched = False
+        probation_override_value = None
+
+        def _set_probation_override_marker(override_end_date):
+            nonlocal probation_override_touched, probation_override_value
+
+            probation_override_touched = True
+            probation_override_value = override_end_date
+
+            existing = emp.leave_limits_override
+            if not isinstance(existing, dict):
+                existing = {}
+            merged = dict(existing)
+
+            if override_end_date is None:
+                merged.pop("_probation_end_date_override", None)
+            else:
+                try:
+                    merged["_probation_end_date_override"] = (
+                        override_end_date.isoformat()
+                    )
+                except Exception:
+                    merged["_probation_end_date_override"] = True
+
+            emp.leave_limits_override = merged or None
+            if "leave_limits_override" not in updates:
+                updates.append("leave_limits_override")
+
         if "project_id" in data:
             proj = Project.objects.get(id=data["project_id"])
             emp.current_project = proj.name
@@ -368,7 +423,11 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
         if "probation_end_date" in data:
             ped = data.get("probation_end_date")
             # Validate against final joining_date (updated or existing)
-            if ped is not None and ped < emp.joining_date:
+            if (
+                ped is not None
+                and ped < emp.joining_date
+                and ped != (emp.joining_date - timedelta(days=1))
+            ):
                 raise serializers.ValidationError(
                     {
                         "probation_end_date": "Probation end date cannot be before joining date."
@@ -376,17 +435,42 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
                 )
             emp.probation_end_date = ped
             updates.append("probation_end_date")
+            _set_probation_override_marker(ped)
 
         if "probation_period_days" in data:
             days = data.get("probation_period_days")
             # compute end date from current joining date
             d = int(days)
-            emp.probation_end_date = (
+            ped = (
                 emp.joining_date - timedelta(days=1)
                 if d <= 0
                 else emp.joining_date + timedelta(days=d - 1)
             )
+            emp.probation_end_date = ped
             updates.append("probation_end_date")
+            _set_probation_override_marker(ped)
+
+        if "is_on_probation" in data:
+            on_prob = bool(data.get("is_on_probation"))
+            if not on_prob:
+                # End probation as of yesterday (local date), so they're not on
+                # probation today.
+                ped = timezone.localdate() - timedelta(days=1)
+                # Defensive: if joining_date is unexpectedly after the target date,
+                # fall back to "no probation" (joining_date - 1).
+                if getattr(emp, "joining_date", None) and emp.joining_date > ped:
+                    ped = emp.joining_date - timedelta(days=1)
+                emp.probation_end_date = ped
+                if "probation_end_date" not in updates:
+                    updates.append("probation_end_date")
+                _set_probation_override_marker(ped)
+            else:
+                # Clear override and revert to policy-derived value.
+                ped = compute_probation_end_date(emp.joining_date)
+                emp.probation_end_date = ped
+                if "probation_end_date" not in updates:
+                    updates.append("probation_end_date")
+                _set_probation_override_marker(None)
 
         if "leave_limits_override" in data:
             overrides = data.get("leave_limits_override")
@@ -440,15 +524,24 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
             if "leave_limits_override" not in updates:
                 updates.append("leave_limits_override")
 
+        # If a probation override was set/cleared in this request, ensure the
+        # reserved marker key survives any concurrent leave_limits_override edits.
+        if probation_override_touched:
+            _set_probation_override_marker(probation_override_value)
+
         # If joining_date changed and probation wasn't explicitly provided, keep existing behavior
         if (
             joining_date is not None
             and "probation_end_date" not in data
             and "probation_period_days" not in data
+            and "is_on_probation" not in data
         ):
             emp.probation_end_date = compute_probation_end_date(emp.joining_date)
             if "probation_end_date" not in updates:
                 updates.append("probation_end_date")
+            # A joining_date change without explicit probation input should
+            # follow policy, so clear any prior explicit override marker.
+            _set_probation_override_marker(None)
 
         emp.name = (user.get_full_name() or "").strip() or user.username
         if "name" not in updates:

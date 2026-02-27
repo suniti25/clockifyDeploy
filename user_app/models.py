@@ -30,7 +30,7 @@ class Employee(models.Model):
     leave_renewal_override_set_at = models.DateTimeField(null=True, blank=True)
 
     # Per-employee leave limit overrides,
-    # Keys are expected to be uppercase leave type names.
+
     leave_limits_override = models.JSONField(blank=True, null=True)
 
     reset_leave_balance = models.BooleanField(default=False)
@@ -39,7 +39,18 @@ class Employee(models.Model):
 
         if on_date is None:
             on_date = timezone.localdate()
-        return self.joining_date <= on_date <= self.probation_end_date
+
+        try:
+            from form_app.policies import get_effective_probation_end_date
+
+            probation_end = get_effective_probation_end_date(self)
+        except Exception:
+            probation_end = getattr(self, "probation_end_date", None)
+
+        joining_date = getattr(self, "joining_date", None)
+        if not joining_date or not probation_end:
+            return False
+        return joining_date <= on_date <= probation_end
 
     def __str__(self) -> str:
         return self.user.get_full_name() or self.user.username
