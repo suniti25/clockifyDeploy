@@ -25,6 +25,15 @@ def _to_int(value: Optional[int], default: int) -> int:
         return int(default)
 
 
+def _to_float(value, default: float) -> float:
+    try:
+        if value is None:
+            return float(default)
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
 def get_leave_policy_settings() -> LeavePolicySettings:
     settings = LeavePolicySettings.objects.order_by("-updated_at", "-id").first()
     if settings:
@@ -34,18 +43,20 @@ def get_leave_policy_settings() -> LeavePolicySettings:
 
 def get_leave_policy_snapshot() -> LeavePolicySnapshot:
     settings = get_leave_policy_settings()
-    limits = {
-        "VACATION": float(settings.vacation_days),
-        "SICK": float(settings.sick_days),
-        "MATERNITY": float(settings.maternity_days),
-        "PATERNITY": float(settings.paternity_days),
-        "BEREAVEMENT": float(settings.bereavement_days),
+
+    field_map = {
+        "VACATION": "vacation_days",
+        "SICK": "sick_days",
+        "MATERNITY": "maternity_days",
+        "PATERNITY": "paternity_days",
+        "BEREAVEMENT": "bereavement_days",
     }
 
-    # Backfill from defaults if any field is null
+    limits: dict[str, float] = {}
     for key, fallback in LEAVE_LIMITS.items():
-        if key not in limits or limits[key] is None:
-            limits[key] = float(fallback)
+        field = field_map.get(key)
+        raw = getattr(settings, field, None) if field else None
+        limits[key] = _to_float(raw, float(fallback))
 
     return LeavePolicySnapshot(
         global_renewal_date=settings.global_renewal_date,
@@ -119,21 +130,23 @@ def get_leave_year_range_for_employee(
     employee, on_date: Optional[date] = None
 ) -> tuple[date, date]:
     on_date = on_date or timezone.localdate()
-    policy = get_leave_policy_snapshot()
-
     override = getattr(employee, "leave_renewal_date_override", None)
-    anchor = _anchor_from_date(override) or _anchor_from_date(
-        policy.global_renewal_date
-    )
+    # Each employee has their own renewal anchor.
+    # Global renewal date is intentionally NOT used here.
+    anchor = _anchor_from_date(override)
 
     if anchor:
         anchor_month, anchor_day = anchor
     else:
         probation_end = getattr(employee, "probation_end_date", None)
         if not probation_end:
-            start = date(on_date.year, 1, 1)
-            end_excl = date(on_date.year + 1, 1, 1)
-            return start, end_excl
+            joining_date = getattr(employee, "joining_date", None)
+            if joining_date:
+                probation_end = compute_probation_end_date(joining_date)
+            else:
+                start = date(on_date.year, 1, 1)
+                end_excl = date(on_date.year + 1, 1, 1)
+                return start, end_excl
         anchor_date = probation_end + timedelta(days=1)
         anchor_month, anchor_day = anchor_date.month, anchor_date.day
 
