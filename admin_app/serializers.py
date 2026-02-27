@@ -997,9 +997,6 @@ class LeaveRenewalOverrideSerializer(serializers.Serializer):
         if not Employee.objects.filter(id=employee_id).exists():
             raise serializers.ValidationError({"employee_id": "Employee not found."})
 
-        override = data.get("leave_renewal_date_override")
-        if override is not None and override < timezone.localdate():
-            raise serializers.ValidationError(
-                {"leave_renewal_date_override": "Override date cannot be in the past."}
-            )
+        # NOTE: override is used as a renewal *anchor* (month/day), not a one-time future date.
+        # Past dates are valid and common (e.g. setting anchor to an employee's historical renewal day).
         return data
