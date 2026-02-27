@@ -14,6 +14,7 @@ from form_app.constants import LEAVE_LIMITS
 from form_app.policies import (
     compute_probation_end_date,
     get_leave_year_range_for_employee,
+    get_effective_probation_end_date,
 )
 from user_app.models import Employee, Profile
 from user_app.models import Project
@@ -79,8 +80,12 @@ class EmployeeDetailSerializer(serializers.ModelSerializer):
         ]
 
     def get_is_on_probation(self, obj):
-        fn = getattr(obj, "is_on_probation", None)
-        return bool(fn()) if callable(fn) else False
+        today = timezone.localdate()
+        joining_date = getattr(obj, "joining_date", None)
+        probation_end = get_effective_probation_end_date(obj)
+        return bool(
+            joining_date and probation_end and joining_date <= today <= probation_end
+        )
 
     def get_probation_period_days(self, obj):
         try:

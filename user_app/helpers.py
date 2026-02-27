@@ -15,6 +15,7 @@ from form_app.policies import (
     get_leave_limits_for_employee,
     get_carryover_percentage,
     get_leave_year_range_for_employee,
+    get_effective_probation_end_date,
 )
 from form_app.helpers import (
     overlapping_days as form_overlapping_days,
@@ -288,7 +289,13 @@ def _build_leave_year_context(employee) -> LeaveYearContext:
     leave_year_start, leave_year_end_excl = get_leave_year_range(employee, today)
     leave_year_end_incl = leave_year_end_excl - timedelta(days=1)
 
-    is_on_probation = employee.is_on_probation(on_date=today)
+    joining_date = getattr(employee, "joining_date", None)
+    probation_end = get_effective_probation_end_date(employee)
+    is_on_probation = (
+        bool(joining_date)
+        and bool(probation_end)
+        and bool(joining_date <= today <= probation_end)
+    )
 
     vacation_carry = 0.0
     if not is_on_probation:
@@ -364,10 +371,13 @@ def _aggregate_approved_usage(employee, ctx: LeaveYearContext):
         if lt == "WFH":
             continue
 
+        joining_date = getattr(employee, "joining_date", None)
+        probation_end = get_effective_probation_end_date(employee)
         in_probation = (
-            bool(getattr(employee, "joining_date", None))
-            and bool(getattr(employee, "probation_end_date", None))
-            and employee.joining_date <= lr.start_date <= employee.probation_end_date
+            bool(joining_date)
+            and bool(probation_end)
+            and bool(getattr(lr, "start_date", None))
+            and joining_date <= lr.start_date <= probation_end
         )
 
         if in_probation:
@@ -405,7 +415,7 @@ def _leave_balance_list(
             "type": "Probation Leave",
             "leave_year_start": ctx.leave_year_start.isoformat(),
             "leave_year_end": ctx.leave_year_end_incl.isoformat(),
-            "renewal_on": ctx.leave_year_end_excl.isoformat(),
+            "renewal_on": ctx.leave_year_end_incl.isoformat(),
             "renewal_value": fmt_leave_days(0.0),
             "carry_forward": 0.0,
             "total": 0.0,
@@ -416,7 +426,7 @@ def _leave_balance_list(
             "type": "Unpaid Leave",
             "leave_year_start": ctx.leave_year_start.isoformat(),
             "leave_year_end": ctx.leave_year_end_incl.isoformat(),
-            "renewal_on": ctx.leave_year_end_excl.isoformat(),
+            "renewal_on": ctx.leave_year_end_incl.isoformat(),
             "renewal_value": fmt_leave_days(0.0),
             "carry_forward": 0.0,
             "total": 0.0,
@@ -448,7 +458,7 @@ def _leave_balance_list(
                 "type": leave_type.capitalize(),
                 "leave_year_start": ctx.leave_year_start.isoformat(),
                 "leave_year_end": ctx.leave_year_end_incl.isoformat(),
-                "renewal_on": ctx.leave_year_end_excl.isoformat(),
+                "renewal_on": ctx.leave_year_end_incl.isoformat(),
                 "renewal_value": fmt_leave_days(limit_num),
                 "carry_forward": fmt_leave_days(carry_forward),
                 "total": fmt_leave_days(total_allowed),

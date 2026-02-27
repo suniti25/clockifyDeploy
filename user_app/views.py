@@ -18,6 +18,7 @@ from drf_spectacular.utils import extend_schema, OpenApiParameter
 from drf_spectacular.types import OpenApiTypes
 
 from form_app.models import LeaveRequest
+from form_app.policies import get_effective_probation_end_date
 
 from .helpers import (
     _aggregate_approved_usage,
@@ -98,7 +99,7 @@ def hello_dashboard(request):
             or request.user.username,
             "role": profile.role,
             "joining_date": _iso(getattr(employee, "joining_date", None)),
-            "probation_end_date": _iso(getattr(employee, "probation_end_date", None)),
+            "probation_end_date": _iso(get_effective_probation_end_date(employee)),
             "is_on_probation": ctx.is_on_probation,
             "leave-balances": leave_balances,
             "upcoming-leaves": upcoming_leaves,

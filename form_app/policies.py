@@ -113,6 +113,37 @@ def compute_probation_end_date(joining_date: date) -> date:
     return joining_date + timedelta(days=days - 1)
 
 
+def get_effective_probation_end_date(employee) -> Optional[date]:
+    """Return the probation end date that should be used for policy calculations.
+
+    Historically, some rows have had an incorrect persisted `probation_end_date`.
+    Since probation is derived from `joining_date` and the current policy
+    (`probation_period_days`), we treat the computed value as source of truth
+    whenever joining_date is available.
+    """
+
+    stored = getattr(employee, "probation_end_date", None)
+    joining_date = getattr(employee, "joining_date", None)
+    if not joining_date:
+        return stored
+
+    try:
+        expected = compute_probation_end_date(joining_date)
+    except Exception:
+        return stored
+
+    if stored is None:
+        return expected
+    try:
+        if stored < joining_date:
+            return expected
+    except Exception:
+        return expected
+
+    # If a persisted value exists but diverges from policy, prefer policy.
+    return expected if stored != expected else stored
+
+
 def _year_reset(year: int, month: int, day: int) -> date:
     try:
         return date(year, month, day)
@@ -138,15 +169,11 @@ def get_leave_year_range_for_employee(
     if anchor:
         anchor_month, anchor_day = anchor
     else:
-        probation_end = getattr(employee, "probation_end_date", None)
+        probation_end = get_effective_probation_end_date(employee)
         if not probation_end:
-            joining_date = getattr(employee, "joining_date", None)
-            if joining_date:
-                probation_end = compute_probation_end_date(joining_date)
-            else:
-                start = date(on_date.year, 1, 1)
-                end_excl = date(on_date.year + 1, 1, 1)
-                return start, end_excl
+            start = date(on_date.year, 1, 1)
+            end_excl = date(on_date.year + 1, 1, 1)
+            return start, end_excl
         anchor_date = probation_end + timedelta(days=1)
         anchor_month, anchor_day = anchor_date.month, anchor_date.day
 
