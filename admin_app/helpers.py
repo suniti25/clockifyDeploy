@@ -16,10 +16,7 @@ from form_app.helpers import (
     fmt_leave_days,
 )
 from form_app.models import LeaveRequest
-from form_app.policies import (
-    get_leave_limits_for_employee,
-    get_effective_probation_end_date,
-)
+from form_app.policies import get_leave_limits_for_employee
 from user_app.helpers import get_leave_year_range, carry_forward_only
 
 
@@ -302,7 +299,7 @@ def _aggregate_approved_usage(
             paid_used_by_type[lt] = float(mu)
 
     joining_date = getattr(emp, "joining_date", None)
-    probation_end_date = get_effective_probation_end_date(emp)
+    probation_end_date = getattr(emp, "probation_end_date", None)
 
     for lr in leaves:
         if (lr.status or "").strip().upper() != LeaveRequest.STATUS_APPROVED:
@@ -320,7 +317,7 @@ def _aggregate_approved_usage(
             bool(joining_date)
             and bool(probation_end_date)
             and bool(getattr(lr, "start_date", None))
-            and joining_date <= lr.start_date < probation_end_date
+            and joining_date <= lr.start_date <= probation_end_date
         )
         if in_probation:
             probation_total += days

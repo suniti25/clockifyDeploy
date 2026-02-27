@@ -25,15 +25,6 @@ def _to_int(value: Optional[int], default: int) -> int:
         return int(default)
 
 
-def _to_float(value, default: float) -> float:
-    try:
-        if value is None:
-            return float(default)
-        return float(value)
-    except (TypeError, ValueError):
-        return float(default)
-
-
 def get_leave_policy_settings() -> LeavePolicySettings:
     settings = LeavePolicySettings.objects.order_by("-updated_at", "-id").first()
     if settings:
@@ -43,20 +34,18 @@ def get_leave_policy_settings() -> LeavePolicySettings:
 
 def get_leave_policy_snapshot() -> LeavePolicySnapshot:
     settings = get_leave_policy_settings()
-
-    field_map = {
-        "VACATION": "vacation_days",
-        "SICK": "sick_days",
-        "MATERNITY": "maternity_days",
-        "PATERNITY": "paternity_days",
-        "BEREAVEMENT": "bereavement_days",
+    limits = {
+        "VACATION": float(settings.vacation_days),
+        "SICK": float(settings.sick_days),
+        "MATERNITY": float(settings.maternity_days),
+        "PATERNITY": float(settings.paternity_days),
+        "BEREAVEMENT": float(settings.bereavement_days),
     }
 
-    limits: dict[str, float] = {}
+    # Backfill from defaults if any field is null
     for key, fallback in LEAVE_LIMITS.items():
-        field = field_map.get(key)
-        raw = getattr(settings, field, None) if field else None
-        limits[key] = _to_float(raw, float(fallback))
+        if key not in limits or limits[key] is None:
+            limits[key] = float(fallback)
 
     return LeavePolicySnapshot(
         global_renewal_date=settings.global_renewal_date,
@@ -110,61 +99,7 @@ def compute_probation_end_date(joining_date: date) -> date:
     days = int(get_probation_days())
     if days <= 0:
         return joining_date - timedelta(days=1)
-    # Treat probation_end_date as an exclusive end boundary.
-    # Example: joining_date=2024-01-01, days=90 -> probation_end_date=2024-03-31,
-    # and dates [2024-01-01, 2024-03-31) are considered "in probation".
-    return joining_date + timedelta(days=days)
-
-
-def get_effective_probation_end_date(employee) -> Optional[date]:
-    """Return the probation end date that should be used for policy calculations.
-
-    Historically, some rows have had an incorrect persisted `probation_end_date`.
-    Since probation is derived from `joining_date` and the current policy
-    (`probation_period_days`), we treat the computed value as source of truth
-    whenever joining_date is available.
-    """
-
-    stored = getattr(employee, "probation_end_date", None)
-    joining_date = getattr(employee, "joining_date", None)
-    if not joining_date:
-        return stored
-
-    # Per-employee probation override.
-    # We historically treated the computed probation end date as source of truth
-    # whenever joining_date was present because some rows had incorrect persisted
-    # probation_end_date values.
-    # To support cases where an admin intentionally ends probation early for a
-    # specific employee, we allow an explicit override marker stored under a
-    # reserved key in Employee.leave_limits_override.
-    raw_overrides = getattr(employee, "leave_limits_override", None)
-    has_probation_override = bool(
-        isinstance(raw_overrides, dict)
-        and raw_overrides.get("_probation_end_date_override")
-    )
-
-    try:
-        expected = compute_probation_end_date(joining_date)
-    except Exception:
-        return stored
-
-    if stored is None:
-        return expected
-    try:
-        if stored < joining_date:
-            # Allow an explicit "no probation" override by storing joining_date - 1.
-            if has_probation_override and stored == joining_date - timedelta(days=1):
-                return stored
-            return expected
-    except Exception:
-        return expected
-
-    # If admin explicitly set an override, respect the persisted value.
-    if has_probation_override:
-        return stored
-
-    # Otherwise, preserve legacy behavior: computed policy is source of truth.
-    return expected if stored != expected else stored
+    return joining_date + timedelta(days=days - 1)
 
 
 def _year_reset(year: int, month: int, day: int) -> date:
@@ -184,34 +119,22 @@ def get_leave_year_range_for_employee(
     employee, on_date: Optional[date] = None
 ) -> tuple[date, date]:
     on_date = on_date or timezone.localdate()
+    policy = get_leave_policy_snapshot()
+
     override = getattr(employee, "leave_renewal_date_override", None)
-    # Each employee has their own renewal anchor.
-    # Global renewal date is intentionally NOT used here.
-    anchor = _anchor_from_date(override)
+    anchor = _anchor_from_date(override) or _anchor_from_date(
+        policy.global_renewal_date
+    )
 
     if anchor:
         anchor_month, anchor_day = anchor
     else:
-        joining_date = getattr(employee, "joining_date", None)
-        probation_end = get_effective_probation_end_date(employee)
-
-        # Default behavior: renew yearly on the employee's probation end month/day.
-        # If probation was explicitly ended early by setting probation_end_date < joining_date
-        # (e.g. joining_date - 1), treat it as "no probation" and anchor to joining_date.
-        anchor_date = None
-        if joining_date and probation_end and probation_end < joining_date:
-            anchor_date = joining_date
-        elif probation_end:
-            anchor_date = probation_end
-        elif joining_date:
-            anchor_date = joining_date
-
-        if not anchor_date:
-            # Fallback for incomplete rows.
+        probation_end = getattr(employee, "probation_end_date", None)
+        if not probation_end:
             start = date(on_date.year, 1, 1)
             end_excl = date(on_date.year + 1, 1, 1)
             return start, end_excl
-
+        anchor_date = probation_end + timedelta(days=1)
         anchor_month, anchor_day = anchor_date.month, anchor_date.day
 
     start_this_year = _year_reset(on_date.year, anchor_month, anchor_day)

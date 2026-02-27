@@ -3,7 +3,6 @@ from datetime import timedelta
 from django.utils import timezone
 from form_app.policies import get_probation_days
 from form_app.policies import get_leave_year_range_for_employee
-from form_app.policies import compute_probation_end_date
 
 from form_app.helpers import get_manual_used_by_type
 
@@ -231,18 +230,11 @@ class EmployeeAdmin(admin.ModelAdmin):
             ):
                 return "N/A"
 
-            overrides = getattr(obj, "leave_limits_override", None)
-            if isinstance(overrides, dict) and overrides.get(
-                "_probation_end_date_override"
-            ):
-                return "Override"
-
             days = int(get_probation_days())
-
             expected = (
                 obj.joining_date - timedelta(days=1)
                 if days <= 0
-                else compute_probation_end_date(obj.joining_date)
+                else obj.joining_date + timedelta(days=days - 1)
             )
             if obj.probation_end_date != expected:
                 return format_html("<b style='color:red;'>Mismatch</b>")

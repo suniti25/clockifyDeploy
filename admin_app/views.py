@@ -854,15 +854,7 @@ class EmployeeRenewalScheduleView(APIView):
 
         emp = Employee.objects.select_related("user").get(id=employee_id)
         emp.leave_renewal_date_override = override
-        emp.leave_renewal_override_set_by = request.user
-        emp.leave_renewal_override_set_at = timezone.now()
-        emp.save(
-            update_fields=[
-                "leave_renewal_date_override",
-                "leave_renewal_override_set_by",
-                "leave_renewal_override_set_at",
-            ]
-        )
+        emp.save(update_fields=["leave_renewal_date_override"])
 
         emp.next_renewal_date = get_next_renewal_date(emp)
         return Response(

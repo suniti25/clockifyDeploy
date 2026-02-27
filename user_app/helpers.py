@@ -15,7 +15,6 @@ from form_app.policies import (
     get_leave_limits_for_employee,
     get_carryover_percentage,
     get_leave_year_range_for_employee,
-    get_effective_probation_end_date,
 )
 from form_app.helpers import (
     overlapping_days as form_overlapping_days,
@@ -289,13 +288,7 @@ def _build_leave_year_context(employee) -> LeaveYearContext:
     leave_year_start, leave_year_end_excl = get_leave_year_range(employee, today)
     leave_year_end_incl = leave_year_end_excl - timedelta(days=1)
 
-    joining_date = getattr(employee, "joining_date", None)
-    probation_end = get_effective_probation_end_date(employee)
-    is_on_probation = (
-        bool(joining_date)
-        and bool(probation_end)
-        and bool(joining_date <= today < probation_end)
-    )
+    is_on_probation = employee.is_on_probation(on_date=today)
 
     vacation_carry = 0.0
     if not is_on_probation:
@@ -334,16 +327,13 @@ def _aggregate_approved_usage(employee, ctx: LeaveYearContext):
     unpaid_leave_total = 0.0
 
     limits = get_leave_limits_for_employee(employee)
-    total_allowed_by_type: dict[str, float] = {}
-    for lt, limit in limits.items():
-        try:
-            total_allowed_by_type[lt] = float(limit or 0.0)
-        except (TypeError, ValueError):
-            total_allowed_by_type[lt] = 0.0
+    total_allowed_by_type: dict[str, float] = {
+        lt: float(limit) for lt, limit in limits.items()
+    }
     if "VACATION" in total_allowed_by_type:
-        total_allowed_by_type["VACATION"] = float(
-            total_allowed_by_type.get("VACATION", 0.0)
-        ) + float(ctx.vacation_carry or 0.0)
+        total_allowed_by_type["VACATION"] = float(limits.get("VACATION", 0.0)) + float(
+            ctx.vacation_carry
+        )
 
     # Apply admin-entered manual usage as baseline used days.
     manual_used = get_manual_used_by_type(
@@ -371,13 +361,10 @@ def _aggregate_approved_usage(employee, ctx: LeaveYearContext):
         if lt == "WFH":
             continue
 
-        joining_date = getattr(employee, "joining_date", None)
-        probation_end = get_effective_probation_end_date(employee)
         in_probation = (
-            bool(joining_date)
-            and bool(probation_end)
-            and bool(getattr(lr, "start_date", None))
-            and joining_date <= lr.start_date < probation_end
+            bool(getattr(employee, "joining_date", None))
+            and bool(getattr(employee, "probation_end_date", None))
+            and employee.joining_date <= lr.start_date <= employee.probation_end_date
         )
 
         if in_probation:
@@ -415,8 +402,6 @@ def _leave_balance_list(
             "type": "Probation Leave",
             "leave_year_start": ctx.leave_year_start.isoformat(),
             "leave_year_end": ctx.leave_year_end_incl.isoformat(),
-            "renewal_on": ctx.leave_year_end_excl.isoformat(),
-            "renewal_value": fmt_leave_days(0.0),
             "carry_forward": 0.0,
             "total": 0.0,
             "used": fmt_leave_days(probation_leave_total),
@@ -426,8 +411,6 @@ def _leave_balance_list(
             "type": "Unpaid Leave",
             "leave_year_start": ctx.leave_year_start.isoformat(),
             "leave_year_end": ctx.leave_year_end_incl.isoformat(),
-            "renewal_on": ctx.leave_year_end_excl.isoformat(),
-            "renewal_value": fmt_leave_days(0.0),
             "carry_forward": 0.0,
             "total": 0.0,
             "used": fmt_leave_days(unpaid_leave_total),
@@ -439,16 +422,11 @@ def _leave_balance_list(
     for leave_type, yearly_limit in limits.items():
         paid_used = float(paid_used_by_type.get(leave_type, 0.0))
 
-        try:
-            limit_num = float(yearly_limit or 0.0)
-        except (TypeError, ValueError):
-            limit_num = 0.0
-
         carry_forward = 0.0
-        total_allowed = float(limit_num)
+        total_allowed = float(yearly_limit)
 
         if leave_type == "VACATION":
-            carry_forward = float(ctx.vacation_carry or 0.0)
+            carry_forward = float(ctx.vacation_carry)
             total_allowed += carry_forward
 
         remaining = max(total_allowed - paid_used, 0.0)
@@ -458,8 +436,6 @@ def _leave_balance_list(
                 "type": leave_type.capitalize(),
                 "leave_year_start": ctx.leave_year_start.isoformat(),
                 "leave_year_end": ctx.leave_year_end_incl.isoformat(),
-                "renewal_on": ctx.leave_year_end_excl.isoformat(),
-                "renewal_value": fmt_leave_days(limit_num),
                 "carry_forward": fmt_leave_days(carry_forward),
                 "total": fmt_leave_days(total_allowed),
                 "used": fmt_leave_days(paid_used),
