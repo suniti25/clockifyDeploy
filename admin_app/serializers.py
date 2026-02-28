@@ -113,11 +113,6 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
     project_id = serializers.IntegerField(required=False)
     joining_date = serializers.DateField(required=False)
 
-    # Some frontends send this as a toggle. If false, treat as "probation is off".
-    # If true, probation end date will be (re)computed from joining_date unless
-    # explicitly provided.
-    is_on_probation = serializers.BooleanField(required=False)
-
     # Optional per-employee renewal anchor override (month/day are used).
     leave_renewal_date_override = serializers.DateField(required=False, allow_null=True)
     # Compatibility for some frontends that send camelCase.
@@ -391,21 +386,6 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
             emp.joining_date = joining_date
             updates.append("joining_date")
 
-        # If probation is turned off, anchor renewal to joining_date by setting
-        # probation_end_date to the day before joining_date.
-        prob_toggle = (
-            data.get("is_on_probation", None) if "is_on_probation" in data else None
-        )
-        if prob_toggle is False:
-            emp.probation_end_date = emp.joining_date - timedelta(days=1)
-            updates.append("probation_end_date")
-        elif prob_toggle is True:
-            # If re-enabling probation and admin didn't explicitly set a probation end,
-            # compute it from joining_date using policy settings.
-            if "probation_end_date" not in data and "probation_period_days" not in data:
-                emp.probation_end_date = compute_probation_end_date(emp.joining_date)
-                updates.append("probation_end_date")
-
         if "leave_renewal_date_override" in data:
             # This is used as an annual anchor (month/day), so past dates are valid.
             emp.leave_renewal_date_override = data.get("leave_renewal_date_override")
@@ -446,9 +426,13 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
                     }
                 )
 
+            # Guard against a common frontend bug: resubmitting 'days left'
+            # (remaining) values in the leave override fields when saving
+            # unrelated edits (name/project/etc). If the submitted values match
+            # the current remaining balances, treat it as display-only.
             if overrides is not None and not force_apply:
                 if not overrides:
-                    overrides = None  # empty object
+                    overrides = None  # empty object => no-op
                 else:
                     try:
                         current_remaining = remaining_leaves(emp)
@@ -465,9 +449,10 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
                         (k in current_remaining) and _eq(v, current_remaining.get(k))
                         for k, v in overrides.items()
                     ):
-                        overrides = None
+                        overrides = None  # no-op
 
             if overrides is None and data.get("leave_limits_override") is not None:
+                # We decided to treat the input as no-op.
                 pass
             elif data.get("leave_limits_override") is None:
                 # explicit clear
