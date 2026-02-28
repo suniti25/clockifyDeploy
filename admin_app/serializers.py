@@ -120,17 +120,6 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
         required=False, allow_null=True, write_only=True
     )
 
-    # Guard: renewal anchor is easy to accidentally change if a frontend
-    # resubmits default date values while saving unrelated fields.
-    # Require an explicit opt-in flag when updating leave_renewal_date_override.
-    apply_leave_renewal_date_override = serializers.BooleanField(
-        required=False, default=False, write_only=True
-    )
-    # Compatibility for some frontends that send camelCase.
-    applyLeaveRenewalDateOverride = serializers.BooleanField(
-        required=False, write_only=True
-    )
-
     # probation can be supplied either as a concrete end date or as days from joining date
     probation_end_date = serializers.DateField(required=False)
     probation_period_days = serializers.IntegerField(required=False, min_value=0)
@@ -242,33 +231,12 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
         if "leave_limits_override" not in data and "leaveLimitsOverride" in data:
             data["leave_limits_override"] = data.get("leaveLimitsOverride")
 
-        # NOTE: We intentionally do NOT normalize leaveRenewalDateOverride ->
-        # leave_renewal_date_override here.
-        #
-        # Several admin UIs submit a default renewal date field even when the
-        # admin is only editing unrelated data (like leave limits override).
-        # If we auto-map camelCase, we can accidentally change the employee's
-        # leave-year anchor and therefore the computed "next renewal" date.
-        #
-        # To update the renewal anchor, clients should send
-        # leave_renewal_date_override explicitly (snake_case) or use the
-        # dedicated renewals endpoint.
-
-        # Normalize renewal-apply flag (camelCase)
+        # Normalize renewal override (camelCase)
         if (
-            "apply_leave_renewal_date_override" not in data
-            and "applyLeaveRenewalDateOverride" in data
+            "leave_renewal_date_override" not in data
+            and "leaveRenewalDateOverride" in data
         ):
-            data["apply_leave_renewal_date_override"] = bool(
-                data.get("applyLeaveRenewalDateOverride")
-            )
-
-        # If a client sent leave_renewal_date_override without explicitly opting in,
-        # ignore it to avoid accidental renewal schedule changes.
-        if "leave_renewal_date_override" in data and not bool(
-            data.get("apply_leave_renewal_date_override", False)
-        ):
-            data.pop("leave_renewal_date_override", None)
+            data["leave_renewal_date_override"] = data.get("leaveRenewalDateOverride")
 
         if "leave_limits_override" in data:
             overrides = data.get("leave_limits_override")
