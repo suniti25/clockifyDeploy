@@ -101,6 +101,7 @@ def hello_dashboard(request):
             "probation_end_date": _iso(getattr(employee, "probation_end_date", None)),
             # Renewal happens on the day after leave_year_end.
             "next_renewal_date": ctx.leave_year_end_excl.isoformat(),
+            "renew_date": ctx.leave_year_end_excl.isoformat(),
             "is_on_probation": ctx.is_on_probation,
             "leave-balances": leave_balances,
             "upcoming-leaves": upcoming_leaves,
