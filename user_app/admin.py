@@ -1,6 +1,7 @@
 from datetime import timedelta
 
 from django.utils import timezone
+from form_app.policies import compute_probation_end_date
 from form_app.policies import get_probation_days
 from form_app.policies import get_leave_year_range_for_employee
 
@@ -68,6 +69,36 @@ class EmployeeAdminForm(forms.ModelForm):
 
     def clean(self):
         cleaned = super().clean()
+
+        joining_date = cleaned.get("joining_date")
+        probation_end_date = cleaned.get("probation_end_date")
+
+        # Keep probation_end_date in sync with joining_date by default.
+        # - On create: auto-fill if left blank.
+        # - On edit: if joining_date changed and user didn't edit probation_end_date,
+        #   recompute it.
+        if joining_date:
+            if probation_end_date is None:
+                cleaned["probation_end_date"] = compute_probation_end_date(joining_date)
+            else:
+                initial_joining = self.initial.get("joining_date")
+                initial_probation = self.initial.get("probation_end_date")
+                if (
+                    initial_joining
+                    and joining_date != initial_joining
+                    and probation_end_date == initial_probation
+                ):
+                    cleaned["probation_end_date"] = compute_probation_end_date(
+                        joining_date
+                    )
+
+        probation_end_date = cleaned.get("probation_end_date")
+        if joining_date and probation_end_date and probation_end_date < joining_date:
+            self.add_error(
+                "probation_end_date",
+                "Probation end date cannot be before joining date.",
+            )
+
         for field_name in self._FIELD_TO_TYPE.keys():
             v = cleaned.get(field_name)
             if v is None:
