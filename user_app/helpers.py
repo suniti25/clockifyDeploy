@@ -397,11 +397,14 @@ def _leave_balance_list(
     unpaid_leave_total: float,
 ):
 
+    next_renewal_date = ctx.leave_year_end_excl.isoformat()
+
     balances: list[dict] = [
         {
             "type": "Probation Leave",
             "leave_year_start": ctx.leave_year_start.isoformat(),
             "leave_year_end": ctx.leave_year_end_incl.isoformat(),
+            "next_renewal_date": next_renewal_date,
             "carry_forward": 0.0,
             "total": 0.0,
             "used": fmt_leave_days(probation_leave_total),
@@ -411,6 +414,7 @@ def _leave_balance_list(
             "type": "Unpaid Leave",
             "leave_year_start": ctx.leave_year_start.isoformat(),
             "leave_year_end": ctx.leave_year_end_incl.isoformat(),
+            "next_renewal_date": next_renewal_date,
             "carry_forward": 0.0,
             "total": 0.0,
             "used": fmt_leave_days(unpaid_leave_total),
@@ -436,6 +440,7 @@ def _leave_balance_list(
                 "type": leave_type.capitalize(),
                 "leave_year_start": ctx.leave_year_start.isoformat(),
                 "leave_year_end": ctx.leave_year_end_incl.isoformat(),
+                "next_renewal_date": next_renewal_date,
                 "carry_forward": fmt_leave_days(carry_forward),
                 "total": fmt_leave_days(total_allowed),
                 "used": fmt_leave_days(paid_used),
