@@ -59,6 +59,9 @@ class EmployeeDetailSerializer(serializers.ModelSerializer):
     is_on_probation = serializers.SerializerMethodField()
     probation_period_days = serializers.SerializerMethodField()
 
+    # Used as an annual anchor (month/day) for computing leave-year windows.
+    leave_renewal_date_override = serializers.DateField(read_only=True)
+
     class Meta:
         model = Employee
         fields = [
@@ -72,6 +75,7 @@ class EmployeeDetailSerializer(serializers.ModelSerializer):
             "joining_date",
             "probation_end_date",
             "probation_period_days",
+            "leave_renewal_date_override",
             "current_project",
             "is_on_probation",
             "is_active",
@@ -108,6 +112,13 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
     )
     project_id = serializers.IntegerField(required=False)
     joining_date = serializers.DateField(required=False)
+
+    # Optional per-employee renewal anchor override (month/day are used).
+    leave_renewal_date_override = serializers.DateField(required=False, allow_null=True)
+    # Compatibility for some frontends that send camelCase.
+    leaveRenewalDateOverride = serializers.DateField(
+        required=False, allow_null=True, write_only=True
+    )
 
     # probation can be supplied either as a concrete end date or as days from joining date
     probation_end_date = serializers.DateField(required=False)
@@ -219,6 +230,13 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
         # Normalize optional leave limits override (case-insensitive keys)
         if "leave_limits_override" not in data and "leaveLimitsOverride" in data:
             data["leave_limits_override"] = data.get("leaveLimitsOverride")
+
+        # Normalize renewal override (camelCase)
+        if (
+            "leave_renewal_date_override" not in data
+            and "leaveRenewalDateOverride" in data
+        ):
+            data["leave_renewal_date_override"] = data.get("leaveRenewalDateOverride")
 
         if "leave_limits_override" in data:
             overrides = data.get("leave_limits_override")
@@ -367,6 +385,11 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
         if joining_date is not None and emp.joining_date != joining_date:
             emp.joining_date = joining_date
             updates.append("joining_date")
+
+        if "leave_renewal_date_override" in data:
+            # This is used as an annual anchor (month/day), so past dates are valid.
+            emp.leave_renewal_date_override = data.get("leave_renewal_date_override")
+            updates.append("leave_renewal_date_override")
 
         if "probation_end_date" in data:
             ped = data.get("probation_end_date")
@@ -982,7 +1005,6 @@ class LeavePolicySettingsSerializer(serializers.ModelSerializer):
     class Meta:
         model = LeavePolicySettings
         fields = [
-            "global_renewal_date",
             "carryover_percentage",
             "probation_period_days",
             "vacation_days",
@@ -1045,9 +1067,7 @@ class LeaveRenewalOverrideSerializer(serializers.Serializer):
         if not Employee.objects.filter(id=employee_id).exists():
             raise serializers.ValidationError({"employee_id": "Employee not found."})
 
-        override = data.get("leave_renewal_date_override")
-        if override is not None and override < timezone.localdate():
-            raise serializers.ValidationError(
-                {"leave_renewal_date_override": "Override date cannot be in the past."}
-            )
+        # Note: leave_renewal_date_override is used as a month/day anchor when
+        # computing leave-year windows; the year portion is not semantically
+        # important, so past dates are valid.
         return data

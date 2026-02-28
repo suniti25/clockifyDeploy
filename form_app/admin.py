@@ -49,7 +49,6 @@ class LeaveRequestAdmin(admin.ModelAdmin):
 class LeavePolicySettingsAdmin(admin.ModelAdmin):
     list_display = (
         "id",
-        "global_renewal_date",
         "carryover_percentage",
         "probation_period_days",
         "vacation_days",

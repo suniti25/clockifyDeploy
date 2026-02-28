@@ -12,7 +12,6 @@ from form_app.models import LeavePolicySettings
 
 @dataclass(frozen=True)
 class LeavePolicySnapshot:
-    global_renewal_date: Optional[date]
     carryover_percentage: int
     probation_period_days: int
     limits: dict[str, float]
@@ -48,7 +47,6 @@ def get_leave_policy_snapshot() -> LeavePolicySnapshot:
             limits[key] = float(fallback)
 
     return LeavePolicySnapshot(
-        global_renewal_date=settings.global_renewal_date,
         carryover_percentage=_to_int(settings.carryover_percentage, 50),
         probation_period_days=_to_int(settings.probation_period_days, 90),
         limits=limits,
@@ -119,23 +117,20 @@ def get_leave_year_range_for_employee(
     employee, on_date: Optional[date] = None
 ) -> tuple[date, date]:
     on_date = on_date or timezone.localdate()
-    policy = get_leave_policy_snapshot()
 
+    # Renewal anchor is per-employee.
+    # Priority:
+    # 1) leave_renewal_date_override (month/day)
+    # 2) joining_date (month/day)
+    # 3) Jan 1 (fallback)
     override = getattr(employee, "leave_renewal_date_override", None)
-    anchor = _anchor_from_date(override) or _anchor_from_date(
-        policy.global_renewal_date
-    )
+    joining_date = getattr(employee, "joining_date", None)
+    anchor = _anchor_from_date(override) or _anchor_from_date(joining_date)
 
     if anchor:
         anchor_month, anchor_day = anchor
     else:
-        probation_end = getattr(employee, "probation_end_date", None)
-        if not probation_end:
-            start = date(on_date.year, 1, 1)
-            end_excl = date(on_date.year + 1, 1, 1)
-            return start, end_excl
-        anchor_date = probation_end + timedelta(days=1)
-        anchor_month, anchor_day = anchor_date.month, anchor_date.day
+        anchor_month, anchor_day = 1, 1
 
     start_this_year = _year_reset(on_date.year, anchor_month, anchor_day)
     if on_date >= start_this_year:
