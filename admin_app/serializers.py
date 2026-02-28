@@ -121,6 +121,14 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
         required=False, allow_null=True, write_only=True
     )
 
+    # Some UIs display (and resubmit) *remaining days left* in the same fields.
+    # If the client sends the current remaining values unchanged, we should not
+    # treat it as an intent to overwrite yearly limits.
+    # Set this to true to force applying leave_limits_override as yearly limits.
+    apply_leave_limits_override = serializers.BooleanField(
+        required=False, default=False, write_only=True
+    )
+
     # Optional per-employee manual used leave adjustments for the current leave year,
     # e.g. {"VACATION": 5, "SICK": 1.5}. Stored under a reserved key in
     # Employee.leave_limits_override.
@@ -385,23 +393,63 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
 
         if "leave_limits_override" in data:
             overrides = data.get("leave_limits_override")
-            if overrides is None:
+
+            force_apply = bool(data.get("apply_leave_limits_override", False))
+            if overrides is not None and not isinstance(overrides, dict):
+                # Should be prevented by validate(), but keep it safe.
+                raise serializers.ValidationError(
+                    {
+                        "leave_limits_override": "Must be an object mapping leave types to numbers."
+                    }
+                )
+
+            # Guard against a common frontend bug: resubmitting 'days left'
+            # (remaining) values in the leave override fields when saving
+            # unrelated edits (name/project/etc). If the submitted values match
+            # the current remaining balances, treat it as display-only.
+            if overrides is not None and not force_apply:
+                if not overrides:
+                    overrides = None  # empty object => no-op
+                else:
+                    try:
+                        current_remaining = remaining_leaves(emp)
+                    except Exception:
+                        current_remaining = {}
+
+                    def _eq(a, b) -> bool:
+                        try:
+                            return float(a) == float(b)
+                        except Exception:
+                            return False
+
+                    if all(
+                        (k in current_remaining) and _eq(v, current_remaining.get(k))
+                        for k, v in overrides.items()
+                    ):
+                        overrides = None  # no-op
+
+            if overrides is None and data.get("leave_limits_override") is not None:
+                # We decided to treat the input as no-op.
+                pass
+            elif data.get("leave_limits_override") is None:
+                # explicit clear
                 emp.leave_limits_override = None
+                updates.append("leave_limits_override")
             else:
                 existing = emp.leave_limits_override
                 if not isinstance(existing, dict):
                     existing = {}
                 merged = dict(existing)
-                merged.update(overrides)
+                merged.update(overrides or {})
 
                 # If admin sets Vacation explicitly, suppress prior-year carry-forward
                 # for the remainder of the current leave year.
-                if "VACATION" in overrides:
+                if overrides and "VACATION" in overrides:
                     merged["_vacation_carry_reset_on"] = (
                         timezone.localdate().isoformat()
                     )
                 emp.leave_limits_override = merged
-            updates.append("leave_limits_override")
+                updates.append("leave_limits_override")
 
         if "manual_used_by_type" in data:
             used_map = data.get("manual_used_by_type")
