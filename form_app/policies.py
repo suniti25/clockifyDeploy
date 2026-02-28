@@ -121,11 +121,20 @@ def get_leave_year_range_for_employee(
     # Renewal anchor is per-employee.
     # Priority:
     # 1) leave_renewal_date_override (month/day)
-    # 2) joining_date (month/day)
-    # 3) Jan 1 (fallback)
+    # 2) probation_end_date + 1 day (month/day)
+    # 3) joining_date (month/day)
+    # 4) Jan 1 (fallback)
     override = getattr(employee, "leave_renewal_date_override", None)
+    probation_end_date = getattr(employee, "probation_end_date", None)
     joining_date = getattr(employee, "joining_date", None)
-    anchor = _anchor_from_date(override) or _anchor_from_date(joining_date)
+    probation_anchor_date = (
+        probation_end_date + timedelta(days=1) if probation_end_date else None
+    )
+    anchor = (
+        _anchor_from_date(override)
+        or _anchor_from_date(probation_anchor_date)
+        or _anchor_from_date(joining_date)
+    )
 
     if anchor:
         anchor_month, anchor_day = anchor

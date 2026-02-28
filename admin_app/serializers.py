@@ -231,12 +231,18 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
         if "leave_limits_override" not in data and "leaveLimitsOverride" in data:
             data["leave_limits_override"] = data.get("leaveLimitsOverride")
 
-        # Normalize renewal override (camelCase)
+        # Normalize renewal override (camelCase) only when it was explicitly sent
+        # in the request payload. This avoids accidental overwrite from serializer
+        # defaults when admin updates unrelated fields like leave limits.
+        initial_payload = getattr(self, "initial_data", {}) or {}
         if (
-            "leave_renewal_date_override" not in data
-            and "leaveRenewalDateOverride" in data
+            isinstance(initial_payload, dict)
+            and "leave_renewal_date_override" not in initial_payload
+            and "leaveRenewalDateOverride" in initial_payload
         ):
-            data["leave_renewal_date_override"] = data.get("leaveRenewalDateOverride")
+            data["leave_renewal_date_override"] = initial_payload.get(
+                "leaveRenewalDateOverride"
+            )
 
         if "leave_limits_override" in data:
             overrides = data.get("leave_limits_override")
