@@ -958,16 +958,28 @@ class AdminUserUpdateSerializer(serializers.Serializer):
             if "is_on_probation" in data:
                 today = timezone.localdate()
                 desired = bool(data.get("is_on_probation"))
-                if desired:
-                    # Ensure probation_end_date is at least today
-                    new_end = max(today, emp.joining_date)
-                else:
-                    # Ensure not on probation by setting end date to before today.
-                    new_end = today - timedelta(days=1)
+                current = (
+                    bool(emp.is_on_probation(on_date=today))
+                    if callable(getattr(emp, "is_on_probation", None))
+                    else bool(
+                        emp.probation_end_date
+                        and emp.joining_date <= today <= emp.probation_end_date
+                    )
+                )
 
-                if emp.probation_end_date != new_end:
-                    emp.probation_end_date = new_end
-                    updates.append("probation_end_date")
+                # Avoid accidental probation rewrites when frontend always posts
+                # the current boolean value during unrelated edits.
+                if desired != current:
+                    if desired:
+                        # Ensure probation_end_date is at least today.
+                        new_end = max(today, emp.joining_date)
+                    else:
+                        # Ensure not on probation by setting end date to before today.
+                        new_end = today - timedelta(days=1)
+
+                    if emp.probation_end_date != new_end:
+                        emp.probation_end_date = new_end
+                        updates.append("probation_end_date")
 
             reset_leave_balance = data.get("reset_leave_balance", None)
             if reset_leave_balance is not None and emp.reset_leave_balance != bool(
