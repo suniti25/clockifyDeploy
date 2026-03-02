@@ -23,6 +23,7 @@ from .helpers import (
     total_leave_this_year,
     used_leaves_by_type,
     remaining_leaves,
+    vacation_carry_forward,
 )
 
 
@@ -432,10 +433,11 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
                     }
                 )
 
-            # Guard against a common frontend bug: resubmitting 'days left'
-            # (remaining) values in the leave override fields when saving
-            # unrelated edits (name/project/etc). If the submitted values match
-            # the current remaining balances, treat it as display-only.
+            # Many UIs bind this form to "remaining days left" values.
+            # When apply_leave_limits_override=false (default), interpret the
+            # submitted values as desired remaining balances and convert them to
+            # yearly limits before storing. If values are unchanged, treat it as
+            # a no-op.
             if overrides is not None and not force_apply:
                 if not overrides:
                     overrides = None  # empty object => no-op
@@ -444,6 +446,18 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
                         current_remaining = remaining_leaves(emp)
                     except Exception:
                         current_remaining = {}
+                    try:
+                        current_used = used_leaves_by_type(emp)
+                    except Exception:
+                        current_used = {}
+                    try:
+                        today = timezone.localdate()
+                        year_start, _year_end_excl = get_leave_year_range_for_employee(
+                            emp, on_date=today
+                        )
+                        vacation_carry = float(vacation_carry_forward(emp, year_start))
+                    except Exception:
+                        vacation_carry = 0.0
 
                     def _eq(a, b) -> bool:
                         try:
@@ -456,6 +470,15 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
                         for k, v in overrides.items()
                     ):
                         overrides = None  # no-op
+                    else:
+                        converted: dict[str, float] = {}
+                        for leave_type, desired_remaining in overrides.items():
+                            used = float(current_used.get(leave_type, 0.0) or 0.0)
+                            yearly_limit = float(desired_remaining) + used
+                            if leave_type == "VACATION":
+                                yearly_limit -= float(vacation_carry)
+                            converted[leave_type] = max(float(yearly_limit), 0.0)
+                        overrides = converted
 
             if overrides is None and data.get("leave_limits_override") is not None:
                 # We decided to treat the input as no-op.
