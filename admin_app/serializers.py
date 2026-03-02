@@ -442,6 +442,22 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
                 if not overrides:
                     overrides = None  # empty object => no-op
                 else:
+                    # Normalize keys so comparisons/conversion are stable across clients.
+                    # (e.g. "Vacation" vs "VACATION").
+                    normalized: dict[str, float] = {}
+                    for k, v in overrides.items():
+                        if not isinstance(k, str):
+                            continue
+                        key = k.strip().upper()
+                        if not key:
+                            continue
+                        normalized[key] = v
+                    overrides = normalized
+
+                    if not overrides:
+                        overrides = None
+                        # empty after normalization
+
                     try:
                         current_remaining = remaining_leaves(emp)
                     except Exception:
@@ -465,20 +481,22 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
                         except Exception:
                             return False
 
-                    if all(
-                        (k in current_remaining) and _eq(v, current_remaining.get(k))
-                        for k, v in overrides.items()
-                    ):
-                        overrides = None  # no-op
-                    else:
-                        converted: dict[str, float] = {}
-                        for leave_type, desired_remaining in overrides.items():
-                            used = float(current_used.get(leave_type, 0.0) or 0.0)
-                            yearly_limit = float(desired_remaining) + used
-                            if leave_type == "VACATION":
-                                yearly_limit -= float(vacation_carry)
-                            converted[leave_type] = max(float(yearly_limit), 0.0)
-                        overrides = converted
+                    if overrides is not None:
+                        if all(
+                            (k in current_remaining)
+                            and _eq(v, current_remaining.get(k))
+                            for k, v in overrides.items()
+                        ):
+                            overrides = None  # no-op
+                        else:
+                            converted: dict[str, float] = {}
+                            for leave_type, desired_remaining in overrides.items():
+                                used = float(current_used.get(leave_type, 0.0) or 0.0)
+                                yearly_limit = float(desired_remaining) + used
+                                if leave_type == "VACATION":
+                                    yearly_limit -= float(vacation_carry)
+                                converted[leave_type] = max(float(yearly_limit), 0.0)
+                            overrides = converted
 
             if overrides is None and data.get("leave_limits_override") is not None:
                 # We decided to treat the input as no-op.
