@@ -1,16 +1,6 @@
 version: '3.9'
 
 services:
-  db:
-    image: postgres:15
-    container_name: leave-db
-    environment:
-      POSTGRES_HOST_AUTH_METHOD: trust
-    env_file:
-      - .env
-    volumes:
-      - leave-db-data:/var/lib/postgresql/data
-
   backend:
     build:
       context: .
@@ -32,8 +22,6 @@ services:
     env_file:
       - .env
     restart: unless-stopped
-    depends_on:
-      - db
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000"]
       interval: 30s
@@ -42,5 +30,4 @@ services:
       start_period: 10s
 
 volumes:
-  leave-db-data:
   staticfiles-data:
