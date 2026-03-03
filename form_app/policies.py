@@ -85,7 +85,9 @@ def get_leave_limits_for_employee(employee) -> dict[str, float]:
 
 
 def get_carryover_percentage() -> int:
-    return get_leave_policy_snapshot().carryover_percentage
+    configured = int(get_leave_policy_snapshot().carryover_percentage)
+    # Business rule: carryover cannot exceed 50%.
+    return max(0, min(configured, 50))
 
 
 def get_probation_days() -> int:

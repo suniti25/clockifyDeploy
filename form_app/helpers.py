@@ -519,7 +519,7 @@ def carry_forward_only(employee, prev_start: date, prev_end_exclusive: date) -> 
     used = sum(overlapping_days(lr, prev_start, prev_end_exclusive) for lr in qs)
     remaining = max(vacation_limit - float(used), 0.0)
 
-    carry_pct = max(0, min(get_carryover_percentage(), 100))
+    carry_pct = max(0, min(get_carryover_percentage(), 50))
     carry_raw = remaining * (float(carry_pct) / 100.0)
     carry = _round_to_half_day(carry_raw)
     carry_floor = int(carry_raw / 0.5) * 0.5

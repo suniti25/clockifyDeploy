@@ -23,6 +23,7 @@ from .helpers import (
     total_leave_this_year,
     used_leaves_by_type,
     remaining_leaves,
+    total_leaves,
     vacation_carry_forward,
 )
 
@@ -610,6 +611,7 @@ class AllUsersDetailSerializer(serializers.ModelSerializer):
     leaves = serializers.SerializerMethodField()
     remaining_leaves = serializers.SerializerMethodField()
     recent_leaves = serializers.SerializerMethodField()
+    total_leaves = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -629,6 +631,7 @@ class AllUsersDetailSerializer(serializers.ModelSerializer):
             "joining_date",
             "last_request_sent",
             "total_leave_this_year",
+            "total_leaves",
             "leaves",
             "remaining_leaves",
             "recent_leaves",
@@ -693,6 +696,10 @@ class AllUsersDetailSerializer(serializers.ModelSerializer):
         emp = getattr(obj, "employee", None)
         leaves = get_employee_leaves(emp) if emp else []
         return remaining_leaves(emp, leaves=leaves) if emp else {}
+
+    def get_total_leaves(self, obj):
+        emp = getattr(obj, "employee", None)
+        return total_leaves(emp) if emp else {}
 
 
 # Create / Update users

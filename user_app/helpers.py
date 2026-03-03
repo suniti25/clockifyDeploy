@@ -94,7 +94,7 @@ def carry_forward_only(employee, prev_start: date, prev_end_exclusive: date) -> 
         prev_used += float(lr.total_days())
 
     prev_remaining = max(yearly_vacation - prev_used, 0.0)
-    carry_pct = max(0, min(get_carryover_percentage(), 100))
+    carry_pct = max(0, min(get_carryover_percentage(), 50))
     carry_raw = prev_remaining * (float(carry_pct) / 100.0)
 
     # round to nearest 0.5

@@ -371,6 +371,25 @@ def used_leaves_by_type(
     return out
 
 
+def total_leaves(emp) -> dict[str, float]:
+    """Return annual leave allocation by type, including VACATION carry-forward."""
+    if not emp:
+        return {}
+
+    year_start, _year_end_excl = get_leave_year_window(emp)
+    carry = float(vacation_carry_forward(emp, year_start))
+
+    limits = get_leave_limits_for_employee(emp)
+    out: dict[str, float] = {}
+    for leave_type, limit in limits.items():
+        leave_type_u = (leave_type or "").strip().upper()
+        total_allowed = float(limit)
+        if leave_type_u == "VACATION":
+            total_allowed += float(carry)
+        out[leave_type_u] = fmt_leave_days(float(round(total_allowed, 1)))
+    return out
+
+
 def remaining_leaves(
     emp, leaves: Optional[list[LeaveRequest]] = None
 ) -> dict[str, float]:
