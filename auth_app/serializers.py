@@ -1,4 +1,5 @@
 from django.contrib.auth import authenticate, get_user_model
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.exceptions import MultipleObjectsReturned
 from django.db import transaction
 from django.utils import timezone
@@ -203,7 +204,11 @@ class ResetPasswordSerializer(serializers.Serializer):
                 {"newPasswordConfirm": "Passwords do not match"}
             )
 
-        validate_password(pwd)
+        try:
+            validate_password(pwd)
+        except DjangoValidationError as exc:
+            # Normalize Django's password validator errors into DRF field errors.
+            raise serializers.ValidationError({"newPassword": list(exc.messages)})
         return data
 
 
@@ -276,7 +281,10 @@ class ChangePasswordSerializer(serializers.Serializer):
                 {"confirm_password": "Passwords do not match"}
             )
 
-        validate_password(new_pwd, user=user)
+        try:
+            validate_password(new_pwd, user=user)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError({"new_password": list(exc.messages)})
         return data
 
     def save(self, **kwargs):
