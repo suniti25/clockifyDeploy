@@ -294,16 +294,13 @@ class ForgotPasswordView(APIView):
         base = (getattr(settings, "FRONTEND_PASSWORD_RESET_URL", "") or "").strip()
         if base:
             parts = urlsplit(base)
-            path = (parts.path or "").strip()
-            if path in ("", "/"):
-                path = "/reset-password"
             query = dict(parse_qsl(parts.query, keep_blank_values=True))
             query["token"] = raw_token
             reset_link = urlunsplit(
                 (
                     parts.scheme,
                     parts.netloc,
-                    path,
+                    parts.path,
                     urlencode(query),
                     parts.fragment,
                 )
