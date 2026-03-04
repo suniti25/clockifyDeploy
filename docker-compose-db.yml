@@ -1,15 +1,16 @@
-version: '3.9'
-
+version: "3.9"
 services:
   db:
     image: postgres:15
     container_name: leave-db
-    environment:
-      POSTGRES_HOST_AUTH_METHOD: trust
     env_file:
       - .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "5432:5432"
     volumes:
       - leave-db-data:/var/lib/postgresql/data
-
 volumes:
   leave-db-data:
