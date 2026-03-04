@@ -39,7 +39,6 @@ def fmt_leave_days(value):
     except (TypeError, ValueError):
         return value
 
-    # Avoid -0.0
     if abs(x) < 1e-9:
         x = 0.0
 
