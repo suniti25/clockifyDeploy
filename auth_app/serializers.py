@@ -192,7 +192,12 @@ class ResetPasswordSerializer(serializers.Serializer):
         pwd = (data.get("newPassword") or "").strip()
         cpwd = (data.get("newPasswordConfirm") or "").strip()
         if not pwd or not cpwd:
-            raise serializers.ValidationError("Password is required")
+            errors = {}
+            if not pwd:
+                errors["newPassword"] = "Password is required"
+            if not cpwd:
+                errors["newPasswordConfirm"] = "Password is required"
+            raise serializers.ValidationError(errors)
         if pwd != cpwd:
             raise serializers.ValidationError(
                 {"newPasswordConfirm": "Passwords do not match"}
@@ -203,18 +208,50 @@ class ResetPasswordSerializer(serializers.Serializer):
 
 
 class ChangePasswordSerializer(serializers.Serializer):
-    old_password = serializers.CharField(write_only=True)
-    new_password = serializers.CharField(write_only=True)
-    confirm_password = serializers.CharField(write_only=True)
+    # Accept both snake_case and camelCase keys to keep the API compatible
+    # with different frontend conventions.
+    old_password = serializers.CharField(
+        write_only=True, required=False, allow_blank=True
+    )
+    oldPassword = serializers.CharField(
+        write_only=True, required=False, allow_blank=True
+    )
+
+    new_password = serializers.CharField(
+        write_only=True, required=False, allow_blank=True
+    )
+    newPassword = serializers.CharField(
+        write_only=True, required=False, allow_blank=True
+    )
+
+    confirm_password = serializers.CharField(
+        write_only=True, required=False, allow_blank=True
+    )
+    confirmPassword = serializers.CharField(
+        write_only=True, required=False, allow_blank=True
+    )
+    newPasswordConfirm = serializers.CharField(
+        write_only=True, required=False, allow_blank=True
+    )
 
     def validate(self, data):
         user = self.context.get("user")
         if not user:
             raise serializers.ValidationError("User context is required")
 
-        old_pwd = (data.get("old_password") or "").strip()
-        new_pwd = (data.get("new_password") or "").strip()
-        cpwd = (data.get("confirm_password") or "").strip()
+        old_pwd = (data.get("old_password") or data.get("oldPassword") or "").strip()
+        new_pwd = (data.get("new_password") or data.get("newPassword") or "").strip()
+        cpwd = (
+            data.get("confirm_password")
+            or data.get("confirmPassword")
+            or data.get("newPasswordConfirm")
+            or ""
+        ).strip()
+
+        # Normalize to canonical keys so `save()` can rely on them.
+        data["old_password"] = old_pwd
+        data["new_password"] = new_pwd
+        data["confirm_password"] = cpwd
 
         if not old_pwd:
             raise serializers.ValidationError(
@@ -227,9 +264,12 @@ class ChangePasswordSerializer(serializers.Serializer):
             )
 
         if not new_pwd or not cpwd:
-            raise serializers.ValidationError(
-                "New password and confirm password are required"
-            )
+            errors = {}
+            if not new_pwd:
+                errors["new_password"] = "New password is required"
+            if not cpwd:
+                errors["confirm_password"] = "Confirm password is required"
+            raise serializers.ValidationError(errors)
 
         if new_pwd != cpwd:
             raise serializers.ValidationError(
@@ -241,7 +281,11 @@ class ChangePasswordSerializer(serializers.Serializer):
 
     def save(self, **kwargs):
         user = self.context["user"]
-        new_pwd = (self.validated_data.get("new_password") or "").strip()
+        new_pwd = (
+            self.validated_data.get("new_password")
+            or self.validated_data.get("newPassword")
+            or ""
+        ).strip()
         user.set_password(new_pwd)
         user.save(update_fields=["password"])
         return user

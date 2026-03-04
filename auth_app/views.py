@@ -13,6 +13,7 @@ from django.utils import timezone
 
 from rest_framework import status
 from rest_framework.authentication import SessionAuthentication
+from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -23,6 +24,8 @@ from drf_spectacular.utils import extend_schema
 from drf_spectacular.types import OpenApiTypes
 
 from user_app.models import Profile
+
+from admin_app.permissions import IsAdminRole
 
 from .models import PasswordResetToken
 from .serializers import (
@@ -35,6 +38,22 @@ from .serializers import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _flatten_error_detail(detail):
+    if isinstance(detail, list):
+        flattened = [_flatten_error_detail(x) for x in detail]
+        return flattened[0] if len(flattened) == 1 else flattened
+    if isinstance(detail, dict):
+        return {k: _flatten_error_detail(v) for k, v in detail.items()}
+    return detail
+
+
+def _password_error_response(exc: DRFValidationError) -> Response:
+    data = _flatten_error_detail(getattr(exc, "detail", exc))
+    if isinstance(data, dict) and set(data.keys()) == {"non_field_errors"}:
+        data = {"detail": data.get("non_field_errors")}
+    return Response(data, status=status.HTTP_400_BAD_REQUEST)
 
 
 class CsrfExemptSessionAuthentication(SessionAuthentication):
@@ -124,10 +143,10 @@ class SetRefreshCookieView(APIView):
 
 
 class RegisterView(APIView):
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated, IsAdminRole]
 
     @extend_schema(
-        description="Register a new user.",
+        description="Register a new user (admin-only).",
         request=RegisterSerializer,
         responses={201: OpenApiTypes.OBJECT, 400: OpenApiTypes.OBJECT},
     )
@@ -219,7 +238,10 @@ class ChangePasswordView(APIView):
         ser = ChangePasswordSerializer(
             data=request.data, context={"user": request.user}
         )
-        ser.is_valid(raise_exception=True)
+        try:
+            ser.is_valid(raise_exception=True)
+        except DRFValidationError as exc:
+            return _password_error_response(exc)
         ser.save()
         return Response(
             {"detail": "Password changed successfully"},
@@ -321,7 +343,10 @@ class ResetPasswordView(APIView):
     @transaction.atomic
     def post(self, request):
         ser = ResetPasswordSerializer(data=request.data)
-        ser.is_valid(raise_exception=True)
+        try:
+            ser.is_valid(raise_exception=True)
+        except DRFValidationError as exc:
+            return _password_error_response(exc)
 
         raw_token = (ser.validated_data.get("token") or "").strip()
         pwd = (ser.validated_data.get("newPassword") or "").strip()
