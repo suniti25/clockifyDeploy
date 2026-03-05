@@ -29,6 +29,7 @@ async def _discord_request(method: str, url: str, payload: dict | None):
     headers = {
         "Authorization": f"Bot {settings.DISCORD_TOKEN}",
         "Content-Type": "application/json",
+        "User-Agent": "leave-backend-prod (https://avinto.no, 1.0)",
     }
 
     try:
