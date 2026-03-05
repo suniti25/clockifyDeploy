@@ -255,6 +255,10 @@ def _build_leave_embed(leave: LeaveRequest) -> dict:
 
 # ADMIN MESSAGE HANDLING
 def send_leave_request_to_admin(leave: LeaveRequest):
+    if not leave:
+        logger.warning("SEND_LEAVE_TO_ADMIN: called with leave=None; skipping")
+        return None
+
     """
     Called when employee applies leave.
     Stores discord_message_id back into LeaveRequest if sent successfully.
