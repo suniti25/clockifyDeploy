@@ -3,34 +3,47 @@ from datetime import date
 
 import aiohttp
 from asgiref.sync import async_to_sync
-
 from django.conf import settings
 from django.core.mail import send_mail
-from django.utils.html import escape
 from django.utils import timezone
+from django.utils.html import escape
 
-from form_app.models import LeaveRequest
 from form_app.helpers import display_is_paid
+from form_app.models import LeaveRequest
 
 logger = logging.getLogger(__name__)
 
 DISCORD_API_BASE = "https://discord.com/api/v10"
 HTTP_TIMEOUT = aiohttp.ClientTimeout(total=12)
 
+# Keep UA stable. Cloudflare can block "generic" clients if UA is missing.
+DISCORD_USER_AGENT = "leave-backend-prod (https://avinto.no, 1.0)"
+
 
 # CORE DISCORD HTTP
 async def _discord_request(method: str, url: str, payload: dict | None):
-    if not settings.DISCORD_TOKEN:
+    """
+    Low-level Discord HTTP wrapper.
+    Returns:
+      - dict (json) on success,
+      - {"ok": True} on 204,
+      - None on failure.
+    """
+    token = getattr(settings, "DISCORD_TOKEN", None)
+    if not token:
         logger.warning(
-            "settings.DISCORD_TOKEN not configured; skipping Discord request."
+            "DISCORD: settings.DISCORD_TOKEN not configured; skipping request."
         )
         return None
 
     headers = {
-        "Authorization": f"Bot {settings.DISCORD_TOKEN}",
+        "Authorization": f"Bot {token}",
         "Content-Type": "application/json",
-        "User-Agent": "leave-backend-prod (https://avinto.no, 1.0)",
+        "User-Agent": DISCORD_USER_AGENT,
     }
+
+    payload_keys = list((payload or {}).keys())
+    logger.info("DISCORD_REQUEST: %s %s payload_keys=%s", method, url, payload_keys)
 
     try:
         async with aiohttp.ClientSession(timeout=HTTP_TIMEOUT) as session:
@@ -40,12 +53,17 @@ async def _discord_request(method: str, url: str, payload: dict | None):
                 text = await resp.text()
 
                 if resp.status not in (200, 201, 204):
+                    # Discord/Cloudflare sometimes returns 40333 with message "internal network error"
+                    # which is why we log the response body.
+                    # Truncate body so logs don't explode.
+                    body_preview = (text or "")[:2000]
                     logger.error(
-                        "Discord API failed: %s %s status=%s body=%s",
+                        "DISCORD_FAILED: %s %s status=%s body=%s payload=%s",
                         method,
                         url,
                         resp.status,
-                        text,
+                        body_preview,
+                        payload,
                     )
                     return None
 
@@ -55,10 +73,10 @@ async def _discord_request(method: str, url: str, payload: dict | None):
                 try:
                     return await resp.json()
                 except Exception:
-                    return {"raw": text}
+                    return {"raw": (text or "")[:2000]}
 
     except Exception:
-        logger.exception("Discord request error: %s %s", method, url)
+        logger.exception("DISCORD_EXCEPTION: %s %s payload=%s", method, url, payload)
         return None
 
 
@@ -66,7 +84,7 @@ async def send_discord_message(
     *, channel_id: int | None, embed=None, content=None, components=None
 ):
     if not channel_id:
-        logger.warning("No channel_id provided; skipping Discord send.")
+        logger.warning("DISCORD_SEND: No channel_id provided; skipping.")
         return None
 
     url = f"{DISCORD_API_BASE}/channels/{channel_id}/messages"
@@ -86,7 +104,12 @@ async def send_discord_message(
 
 
 async def patch_discord_message(
-    channel_id: int, message_id: str, *, content=None, embeds=None, components=None
+    channel_id: int,
+    message_id: str,
+    *,
+    content=None,
+    embeds=None,
+    components=None,
 ) -> bool:
     url = f"{DISCORD_API_BASE}/channels/{channel_id}/messages/{message_id}"
 
@@ -182,7 +205,10 @@ def _build_leave_embed(leave: LeaveRequest) -> dict:
     if paid_status is None:
         title = f"{title_prefix}{employee_name} - {leave.get_leave_type_display()} Leave Request"
     else:
-        title = f"{title_prefix}{employee_name} - {'Paid' if paid_status else 'Unpaid'} {leave.get_leave_type_display()} Leave Request"
+        title = (
+            f"{title_prefix}{employee_name} - "
+            f"{'Paid' if paid_status else 'Unpaid'} {leave.get_leave_type_display()} Leave Request"
+        )
 
     from_to = f"{_fmt_mdY(leave.start_date)} → {_fmt_mdY(leave.end_date)}"
     applied_str = _fmt_nepal_datetime(getattr(leave, "applied_at", None))
@@ -224,29 +250,46 @@ def _build_leave_embed(leave: LeaveRequest) -> dict:
         ]
     )
 
-    return {
-        "title": title,
-        "color": 0x3498DB,
-        "fields": fields,
-    }
+    return {"title": title, "color": 0x3498DB, "fields": fields}
 
 
 # ADMIN MESSAGE HANDLING
 def send_leave_request_to_admin(leave: LeaveRequest):
-    embed = _build_leave_embed(leave)
-    components = _approval_components(leave.id) if leave.status == "PENDING" else []
-
-    msg_id = async_to_sync(send_discord_message)(
-        channel_id=settings.DISCORD_ADMIN_CHANNEL_ID,
-        embed=embed,
-        components=components,
+    """
+    Called when employee applies leave.
+    Stores discord_message_id back into LeaveRequest if sent successfully.
+    """
+    admin_channel_id = getattr(settings, "DISCORD_ADMIN_CHANNEL_ID", None)
+    logger.info(
+        "SEND_LEAVE_TO_ADMIN: leave_id=%s status=%s admin_channel_id=%s",
+        leave.id,
+        leave.status,
+        admin_channel_id,
     )
 
-    if msg_id:
-        leave.discord_message_id = msg_id
-        leave.save(update_fields=["discord_message_id"])
+    try:
+        embed = _build_leave_embed(leave)
+        components = _approval_components(leave.id) if leave.status == "PENDING" else []
 
-    return msg_id
+        msg_id = async_to_sync(send_discord_message)(
+            channel_id=admin_channel_id,
+            embed=embed,
+            components=components,
+        )
+
+        logger.info(
+            "SEND_LEAVE_TO_ADMIN_RESULT: leave_id=%s msg_id=%s", leave.id, msg_id
+        )
+
+        if msg_id:
+            leave.discord_message_id = msg_id
+            leave.save(update_fields=["discord_message_id"])
+
+        return msg_id
+
+    except Exception:
+        logger.exception("SEND_LEAVE_TO_ADMIN_EXCEPTION: leave_id=%s", leave.id)
+        return None
 
 
 def update_admin_leave_message(leave: LeaveRequest):
@@ -256,15 +299,15 @@ def update_admin_leave_message(leave: LeaveRequest):
         leave.discord_message_id,
         leave.status,
     )
+
     if not leave.discord_message_id:
-        logger.debug(
-            "No discord_message_id; skipping update_admin_leave_message leave_id=%s",
-            leave.id,
-        )
+        logger.debug("No discord_message_id; skipping update leave_id=%s", leave.id)
         return False
-    if not settings.DISCORD_ADMIN_CHANNEL_ID:
+
+    admin_channel_id = getattr(settings, "DISCORD_ADMIN_CHANNEL_ID", None)
+    if not admin_channel_id:
         logger.warning(
-            "DISCORD_settings.DISCORD_ADMIN_CHANNEL_ID not configured; skipping message update."
+            "DISCORD_ADMIN_CHANNEL_ID not configured; skipping message update."
         )
         return False
 
@@ -273,12 +316,13 @@ def update_admin_leave_message(leave: LeaveRequest):
 
     result = bool(
         async_to_sync(patch_discord_message)(
-            settings.DISCORD_ADMIN_CHANNEL_ID,
+            admin_channel_id,
             leave.discord_message_id,
             embeds=[embed],
             components=components,
         )
     )
+
     logger.debug(
         "patch_discord_message result=%s leave_id=%s discord_message_id=%s",
         result,
@@ -289,6 +333,7 @@ def update_admin_leave_message(leave: LeaveRequest):
 
 
 update_discord_leave_message = update_admin_leave_message
+
 
 # DAILY QUERY HELPERS
 
@@ -319,10 +364,13 @@ def _approved_today_qs(target_date: date):
 
 
 # EMPLOYEE CHANNEL
+
+
 def send_approved_leave_to_employees(leave: LeaveRequest) -> bool:
-    if not settings.DISCORD_ADMIN_CHANNEL_ID:
+    admin_channel_id = getattr(settings, "DISCORD_ADMIN_CHANNEL_ID", None)
+    if not admin_channel_id:
         logger.warning(
-            "DISCORD_settings.DISCORD_ADMIN_CHANNEL_ID not configured; skipping approval announcement."
+            "DISCORD_ADMIN_CHANNEL_ID not configured; skipping approval announcement."
         )
         return False
 
@@ -337,17 +385,16 @@ def send_approved_leave_to_employees(leave: LeaveRequest) -> bool:
     )
 
     msg_id = async_to_sync(send_discord_message)(
-        channel_id=settings.DISCORD_ADMIN_CHANNEL_ID,
-        content=content,
+        channel_id=admin_channel_id, content=content
     )
-
     return bool(msg_id)
 
 
 def send_rejected_leave_to_employees(leave: LeaveRequest) -> bool:
-    if not settings.DISCORD_ADMIN_CHANNEL_ID:
+    admin_channel_id = getattr(settings, "DISCORD_ADMIN_CHANNEL_ID", None)
+    if not admin_channel_id:
         logger.warning(
-            "DISCORD_settings.DISCORD_ADMIN_CHANNEL_ID not configured; skipping rejection announcement."
+            "DISCORD_ADMIN_CHANNEL_ID not configured; skipping rejection announcement."
         )
         return False
 
@@ -362,17 +409,14 @@ def send_rejected_leave_to_employees(leave: LeaveRequest) -> bool:
     )
 
     msg_id = async_to_sync(send_discord_message)(
-        channel_id=settings.DISCORD_ADMIN_CHANNEL_ID,
-        content=content,
+        channel_id=admin_channel_id, content=content
     )
-
     return bool(msg_id)
 
 
 def send_employee_on_leave_today():
     today = timezone.localdate()
     qs = _active_today_qs(today).filter(notified_employee_at__isnull=True)
-
     if not qs.exists():
         return False
 
@@ -388,9 +432,9 @@ def send_employee_on_leave_today():
 
     content = "\n".join(lines)
 
+    employee_channel_id = getattr(settings, "DISCORD_EMPLOYEE_CHANNEL_ID", None)
     msg_id = async_to_sync(send_discord_message)(
-        channel_id=settings.DISCORD_EMPLOYEE_CHANNEL_ID,
-        content=content,
+        channel_id=employee_channel_id, content=content
     )
 
     if not msg_id:
@@ -400,11 +444,12 @@ def send_employee_on_leave_today():
     return True
 
 
-# ADMIN CHANNEL
+# ADMIN CHANNEL DAILY
+
+
 def send_admin_approved_today():
     today = timezone.localdate()
     qs = _approved_today_qs(today).filter(notified_admin_at__isnull=True)
-
     if not qs.exists():
         return False
 
@@ -416,9 +461,9 @@ def send_admin_approved_today():
 
     content = "\n".join(lines)
 
+    admin_channel_id = getattr(settings, "DISCORD_ADMIN_CHANNEL_ID", None)
     msg_id = async_to_sync(send_discord_message)(
-        channel_id=settings.DISCORD_ADMIN_CHANNEL_ID,
-        content=content,
+        channel_id=admin_channel_id, content=content
     )
 
     if not msg_id:
@@ -429,6 +474,8 @@ def send_admin_approved_today():
 
 
 # EMAILS
+
+
 def send_approval_email_to_employee(leave: LeaveRequest):
     user = leave.employee.user
     if not user.email:
@@ -548,6 +595,7 @@ Avinto Admin Team
 <p>Thank you.</p>
 <p>Regards,<br/>Avinto Admin Team</p>
 """.strip()
+
     send_mail(
         subject=subject,
         message=message,
@@ -566,6 +614,7 @@ def send_rejection_email_to_employee(leave: LeaveRequest):
 
     name = _employee_name(leave)
     name_html = escape(name)
+
     is_wfh = (leave.leave_type or "").strip().upper() == "WFH"
 
     leave_type_display = leave.get_leave_type_display()
