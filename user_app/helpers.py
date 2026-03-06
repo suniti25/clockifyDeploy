@@ -22,6 +22,7 @@ from form_app.helpers import (
     compute_paid_unpaid_split_for_request,
     _norm_status_expr,
     get_manual_used_by_type,
+    normalize_leave_type,
     fmt_leave_days,
 )
 from form_app.models import LeaveRequest
@@ -389,6 +390,160 @@ def _aggregate_approved_usage(employee, ctx: LeaveYearContext):
     return paid_used_by_type, probation_leave_total, unpaid_leave_total
 
 
+def precompute_paid_unpaid_splits_for_requests(
+    *,
+    employee,
+    requests: list[LeaveRequest],
+) -> dict[int, tuple[float, float]]:
+    """Batch precompute paid/unpaid splits for a small set of requests.
+
+    This avoids calling `compute_paid_unpaid_split_for_request` per-item, which
+    can cause an N+1 query pattern (and slow dashboards/timeouts).
+
+    The returned mapping is keyed by LeaveRequest.id.
+    """
+
+    req_list = [r for r in (requests or []) if getattr(r, "id", None)]
+    if not req_list:
+        return {}
+
+    needed_ids: set[int] = {int(r.id) for r in req_list if r.id is not None}
+    out: dict[int, tuple[float, float]] = {}
+
+    limits = get_leave_limits_for_employee(employee)
+    probation_end = getattr(employee, "probation_end_date", None)
+
+    # Group by leave year window (depends on request start_date).
+    groups: dict[tuple[date, date], list[LeaveRequest]] = {}
+    for req in req_list:
+        on_date = getattr(req, "start_date", None) or timezone.localdate()
+        leave_year_start, leave_year_end_excl = get_leave_year_range_for_employee(
+            employee, on_date=on_date
+        )
+        groups.setdefault((leave_year_start, leave_year_end_excl), []).append(req)
+
+    for (leave_year_start, leave_year_end_excl), group_reqs in groups.items():
+        manual_used_by_type = get_manual_used_by_type(
+            employee=employee, leave_year_start=leave_year_start
+        )
+
+        types_needed: set[str] = set()
+        by_type: dict[str, list[LeaveRequest]] = {}
+        for req in group_reqs:
+            lt = normalize_leave_type(getattr(req, "leave_type", None))
+            if not lt:
+                continue
+            types_needed.add(lt)
+            by_type.setdefault(lt, []).append(req)
+
+        for lt in types_needed:
+            reqs_of_type = by_type.get(lt, [])
+            if not reqs_of_type:
+                continue
+
+            # Cheap fast-paths.
+            if lt == "WFH" or lt not in limits:
+                for req in reqs_of_type:
+                    rid = int(req.id)
+                    try:
+                        days = float(req.total_days())
+                    except Exception:
+                        days = 0.0
+                    out[rid] = (0.0, float(_round_to_half_day(days)))
+                continue
+
+            # Probation: treat as unpaid (consistent with form_app.helpers logic).
+            if probation_end:
+                probation_reqs = [
+                    r
+                    for r in reqs_of_type
+                    if getattr(r, "start_date", None)
+                    and getattr(r, "start_date") <= probation_end
+                ]
+                for req in probation_reqs:
+                    rid = int(req.id)
+                    try:
+                        days = float(req.total_days())
+                    except Exception:
+                        days = 0.0
+                    out[rid] = (0.0, float(_round_to_half_day(days)))
+
+                reqs_of_type = [r for r in reqs_of_type if int(r.id) not in out]
+                if not reqs_of_type:
+                    continue
+
+            vacation_carry = 0.0
+            if lt == "VACATION":
+                prev_day = leave_year_start - timedelta(days=1)
+                prev_start, prev_end_excl = get_leave_year_range_for_employee(
+                    employee, on_date=prev_day
+                )
+                vacation_carry = float(
+                    carry_forward_only(employee, prev_start, prev_end_excl)
+                )
+
+            total_allowed = float(limits.get(lt, 0.0)) + float(vacation_carry)
+            manual_used = float(manual_used_by_type.get(lt, 0.0) or 0.0)
+            remaining = max(float(total_allowed) - float(manual_used), 0.0)
+
+            approved_qs = (
+                LeaveRequest.objects.filter(
+                    employee=employee,
+                    leave_type=lt,
+                    status="APPROVED",
+                    start_date__lt=leave_year_end_excl,
+                    end_date__gte=leave_year_start,
+                )
+                .annotate(_order_ts=Coalesce("approved_at", "applied_at"))
+                .order_by("_order_ts", "id", "start_date", "end_date")
+            )
+
+            if probation_end:
+                approved_qs = approved_qs.filter(start_date__gt=probation_end)
+
+            # Iterate once; record splits only for ids we care about.
+            for lr in approved_qs:
+                lr_days = float(
+                    form_overlapping_days(lr, leave_year_start, leave_year_end_excl)
+                )
+                if lr_days <= 0.0:
+                    continue
+
+                paid_portion = min(float(remaining), float(lr_days))
+                unpaid_portion = max(float(lr_days) - float(paid_portion), 0.0)
+                remaining = max(float(remaining) - float(paid_portion), 0.0)
+
+                if lr.id in needed_ids:
+                    out[int(lr.id)] = (
+                        float(_round_to_half_day(paid_portion)),
+                        float(_round_to_half_day(unpaid_portion)),
+                    )
+
+            # Preview for non-approved requests of this type in this leave year.
+            for req in reqs_of_type:
+                rid = int(req.id)
+                if rid in out:
+                    continue
+
+                status_norm = (getattr(req, "status", "") or "").strip().upper()
+                if status_norm == "APPROVED":
+                    continue
+
+                try:
+                    leave_days = float(req.total_days())
+                except Exception:
+                    leave_days = 0.0
+
+                paid_preview = min(float(remaining), float(leave_days))
+                unpaid_preview = max(float(leave_days) - float(paid_preview), 0.0)
+                out[rid] = (
+                    float(_round_to_half_day(paid_preview)),
+                    float(_round_to_half_day(unpaid_preview)),
+                )
+
+    return out
+
+
 def _leave_balance_list(
     employee,
     ctx: LeaveYearContext,
@@ -454,15 +609,25 @@ def _leave_balance_list(
     return balances
 
 
-def _serialize_upcoming(req: LeaveRequest) -> dict:
+def _serialize_upcoming(
+    req: LeaveRequest, *, paid_unpaid_map: dict[int, tuple[float, float]] | None = None
+) -> dict:
     label = (
         req.get_leave_type_display()
         if hasattr(req, "get_leave_type_display")
         else (req.leave_type or "")
     )
-    paid_days, unpaid_days = compute_paid_unpaid_split_for_request(
-        employee=req.employee, req=req
-    )
+    paid_days = None
+    unpaid_days = None
+    if paid_unpaid_map is not None and getattr(req, "id", None) is not None:
+        tup = paid_unpaid_map.get(int(req.id))
+        if tup is not None:
+            paid_days, unpaid_days = tup
+
+    if paid_days is None or unpaid_days is None:
+        paid_days, unpaid_days = compute_paid_unpaid_split_for_request(
+            employee=req.employee, req=req
+        )
     return {
         "id": str(req.id),
         "leave_type": label,
@@ -478,7 +643,9 @@ def _serialize_upcoming(req: LeaveRequest) -> dict:
     }
 
 
-def _serialize_recent(req: LeaveRequest) -> dict:
+def _serialize_recent(
+    req: LeaveRequest, *, paid_unpaid_map: dict[int, tuple[float, float]] | None = None
+) -> dict:
     leave_type_label = (
         req.get_leave_type_display()
         if hasattr(req, "get_leave_type_display")
@@ -486,9 +653,17 @@ def _serialize_recent(req: LeaveRequest) -> dict:
     )
     applied_at = getattr(req, "applied_at", None)
     reviewed_at = getattr(req, "reviewed_at", None) or getattr(req, "approved_at", None)
-    paid_days, unpaid_days = compute_paid_unpaid_split_for_request(
-        employee=req.employee, req=req
-    )
+    paid_days = None
+    unpaid_days = None
+    if paid_unpaid_map is not None and getattr(req, "id", None) is not None:
+        tup = paid_unpaid_map.get(int(req.id))
+        if tup is not None:
+            paid_days, unpaid_days = tup
+
+    if paid_days is None or unpaid_days is None:
+        paid_days, unpaid_days = compute_paid_unpaid_split_for_request(
+            employee=req.employee, req=req
+        )
 
     return {
         "id": str(req.id),

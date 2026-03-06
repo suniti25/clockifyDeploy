@@ -30,6 +30,7 @@ from .helpers import (
     _serialize_upcoming,
     apply_history_filters,
     history_queryset,
+    precompute_paid_unpaid_splits_for_requests,
 )
 from .serializers import ProfileSerializer
 
@@ -85,10 +86,23 @@ def hello_dashboard(request):
             "end_session",
         )
     )[:5]
-    upcoming_leaves = [_serialize_upcoming(req) for req in upcoming_qs]
 
-    recent_qs = history_queryset(employee)[:10]
-    recent_requests = [_serialize_recent(req) for req in recent_qs]
+    upcoming_list = list(upcoming_qs)
+    recent_list = list(history_queryset(employee)[:10])
+
+    paid_unpaid_map = precompute_paid_unpaid_splits_for_requests(
+        employee=employee,
+        requests=[*upcoming_list, *recent_list],
+    )
+
+    upcoming_leaves = [
+        _serialize_upcoming(req, paid_unpaid_map=paid_unpaid_map)
+        for req in upcoming_list
+    ]
+
+    recent_requests = [
+        _serialize_recent(req, paid_unpaid_map=paid_unpaid_map) for req in recent_list
+    ]
 
     return Response(
         {
