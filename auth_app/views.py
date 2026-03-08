@@ -40,6 +40,58 @@ from .serializers import (
 logger = logging.getLogger(__name__)
 
 
+def _is_https_request(request) -> bool:
+    # Works behind proxies if SECURE_PROXY_SSL_HEADER is configured.
+    try:
+        if request.is_secure():
+            return True
+    except Exception:
+        pass
+    return (request.META.get("HTTP_X_FORWARDED_PROTO") or "").lower() == "https"
+
+
+def _refresh_cookie_options(request) -> dict:
+
+    if _is_https_request(request):
+        return {"secure": True, "samesite": "None"}
+    return {"secure": False, "samesite": "Lax"}
+
+
+def _blacklist_user_refresh_tokens(user) -> None:
+    """Best-effort invalidation of existing refresh tokens for a user.
+
+    Access tokens remain valid until they expire (10 minutes by default),
+    but blacklisting refresh tokens prevents getting new access tokens.
+    """
+
+    try:
+        from rest_framework_simplejwt.token_blacklist.models import (
+            BlacklistedToken,
+            OutstandingToken,
+        )
+    except Exception:
+        # Token blacklist app not installed or unavailable.
+        return
+
+    try:
+        for token in OutstandingToken.objects.filter(user=user):
+            BlacklistedToken.objects.get_or_create(token=token)
+    except Exception:
+        logger.exception(
+            "Failed to blacklist outstanding tokens for user_id=%s", user.pk
+        )
+
+
+def _clear_refresh_cookie(response: Response, request) -> None:
+    opts = _refresh_cookie_options(request)
+    response.delete_cookie(
+        "refresh_token",
+        path="/",
+        secure=opts.get("secure", False),
+        samesite=opts.get("samesite", "Lax"),
+    )
+
+
 def _flatten_error_detail(detail):
     if isinstance(detail, list):
         flattened = [_flatten_error_detail(x) for x in detail]
@@ -94,8 +146,7 @@ class LoginView(APIView):
             "refresh_token",
             str(refresh),
             httponly=True,
-            secure=True,
-            samesite="None",
+            **_refresh_cookie_options(request),
             max_age=60 * 60 * 24 * 30,  # 30 days
             path="/",
         )
@@ -134,8 +185,7 @@ class SetRefreshCookieView(APIView):
             "refresh_token",
             str(refresh),
             httponly=True,
-            secure=True,
-            samesite="None",
+            **_refresh_cookie_options(request),
             max_age=60 * 60 * 24 * 30,  # 30 days
             path="/",
         )
@@ -243,10 +293,13 @@ class ChangePasswordView(APIView):
         except DRFValidationError as exc:
             return _password_error_response(exc)
         ser.save()
-        return Response(
+        _blacklist_user_refresh_tokens(request.user)
+        resp = Response(
             {"detail": "Password changed successfully"},
             status=status.HTTP_200_OK,
         )
+        _clear_refresh_cookie(resp, request)
+        return resp
 
 
 class ForgotPasswordView(APIView):
@@ -368,6 +421,8 @@ class ResetPasswordView(APIView):
         user = prt.user
         user.set_password(pwd)
         user.save(update_fields=["password"])
+
+        _blacklist_user_refresh_tokens(user)
 
         prt.used_at = timezone.now()
         prt.save(update_fields=["used_at"])
