@@ -114,11 +114,15 @@ class RegisterSerializer(serializers.ModelSerializer):
         password = validated_data.pop("password")
         joining_date = validated_data.pop("joining_date")
 
+        first_name = (validated_data.get("first_name") or "").strip()
+        last_name = (validated_data.get("last_name") or "").strip()
+        display_name = f"{first_name} {last_name}".strip()
+
         user = User.objects.create_user(
             username=validated_data["username"],
             email=validated_data["email"],
-            first_name=validated_data.get("first_name", ""),
-            last_name=validated_data.get("last_name", ""),
+            first_name=first_name,
+            last_name=last_name,
             password=password,
         )
 
@@ -132,11 +136,16 @@ class RegisterSerializer(serializers.ModelSerializer):
         employee, _ = Employee.objects.get_or_create(
             user=user,
             defaults={
+                "name": display_name or user.username,
                 "joining_date": joining_date,
                 "probation_end_date": probation_end_date,
             },
         )
         updates = []
+        if not (employee.name or "").strip():
+            employee.name = display_name or user.username
+            updates.append("name")
+
         if employee.joining_date != joining_date:
             employee.joining_date = joining_date
             updates.append("joining_date")

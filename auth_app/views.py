@@ -84,10 +84,11 @@ def _blacklist_user_refresh_tokens(user) -> None:
 
 def _clear_refresh_cookie(response: Response, request) -> None:
     opts = _refresh_cookie_options(request)
+    # Django's HttpResponseBase.delete_cookie does not accept a `secure` kwarg.
+    # Deleting a cookie only requires matching name + path (+ domain if used).
     response.delete_cookie(
         "refresh_token",
         path="/",
-        secure=opts.get("secure", False),
         samesite=opts.get("samesite", "Lax"),
     )
 
