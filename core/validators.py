@@ -34,3 +34,47 @@ class SymbolPasswordValidator:
         return _("Your password must contain at least %(min_symbols)d symbol(s).") % {
             "min_symbols": self.min_symbols
         }
+
+
+class UppercasePasswordValidator:
+    """Require at least N uppercase letters in the password."""
+
+    def __init__(self, min_uppercase: int = 1):
+        self.min_uppercase = int(min_uppercase)
+
+    def validate(self, password: str, user=None):
+        uppercase_count = sum(1 for ch in (password or "") if ch.isupper())
+        if uppercase_count < self.min_uppercase:
+            raise ValidationError(
+                _(
+                    "This password must contain at least %(min_uppercase)d uppercase letter(s)."
+                ),
+                code="password_no_uppercase",
+                params={"min_uppercase": self.min_uppercase},
+            )
+
+    def get_help_text(self) -> str:
+        return _(
+            "Your password must contain at least %(min_uppercase)d uppercase letter(s)."
+        ) % {"min_uppercase": self.min_uppercase}
+
+
+class DigitPasswordValidator:
+    """Require at least N digits (0-9) in the password."""
+
+    def __init__(self, min_digits: int = 1):
+        self.min_digits = int(min_digits)
+
+    def validate(self, password: str, user=None):
+        digit_count = sum(1 for ch in (password or "") if ch.isdigit())
+        if digit_count < self.min_digits:
+            raise ValidationError(
+                _("This password must contain at least %(min_digits)d number(s)."),
+                code="password_no_digit",
+                params={"min_digits": self.min_digits},
+            )
+
+    def get_help_text(self) -> str:
+        return _("Your password must contain at least %(min_digits)d number(s).") % {
+            "min_digits": self.min_digits
+        }

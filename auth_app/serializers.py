@@ -83,13 +83,10 @@ class RegisterSerializer(serializers.ModelSerializer):
         if data["password"] != data["password_confirm"]:
             raise serializers.ValidationError({"password": "Passwords do not match"})
 
-        # Require at least one symbol character (e.g. @, #, !)
-        import re
-
-        if not re.search(r"[^A-Za-z0-9]", data["password"] or ""):
-            raise serializers.ValidationError(
-                {"password": "Password must contain at least 1 symbol (e.g. @, #, !)."}
-            )
+        try:
+            validate_password((data.get("password") or "").strip())
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError({"password": list(exc.messages)})
 
         if User.objects.filter(
             username__iexact=(data["username"] or "").strip()
@@ -259,32 +256,55 @@ class ChangePasswordSerializer(serializers.Serializer):
         data["confirm_password"] = cpwd
 
         if not old_pwd:
+            # Return both snake_case and camelCase keys so different frontends
+            # can map field errors consistently.
             raise serializers.ValidationError(
-                {"old_password": "Old password is required"}
+                {
+                    "old_password": "Old password is required",
+                    "oldPassword": "Old password is required",
+                }
             )
 
         if not user.check_password(old_pwd):
             raise serializers.ValidationError(
-                {"old_password": "Old password is incorrect"}
+                {
+                    "old_password": "Old password is incorrect",
+                    "oldPassword": "Old password is incorrect",
+                }
             )
 
         if not new_pwd or not cpwd:
             errors = {}
             if not new_pwd:
                 errors["new_password"] = "New password is required"
+                errors["newPassword"] = "New password is required"
             if not cpwd:
                 errors["confirm_password"] = "Confirm password is required"
+                errors["confirmPassword"] = "Confirm password is required"
+                errors["newPasswordConfirm"] = "Confirm password is required"
             raise serializers.ValidationError(errors)
 
         if new_pwd != cpwd:
             raise serializers.ValidationError(
-                {"confirm_password": "Passwords do not match"}
+                {
+                    "confirm_password": "Passwords do not match",
+                    "confirmPassword": "Passwords do not match",
+                    "newPasswordConfirm": "Passwords do not match",
+                }
             )
+
+        # Prevent reusing the existing password.
+        if user.check_password(new_pwd):
+            msg = "New password must be different from the old password"
+            raise serializers.ValidationError({"new_password": msg, "newPassword": msg})
 
         try:
             validate_password(new_pwd, user=user)
         except DjangoValidationError as exc:
-            raise serializers.ValidationError({"new_password": list(exc.messages)})
+            messages = list(exc.messages)
+            raise serializers.ValidationError(
+                {"new_password": messages, "newPassword": messages}
+            )
         return data
 
     def save(self, **kwargs):

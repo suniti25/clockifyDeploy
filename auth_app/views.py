@@ -419,6 +419,17 @@ class ResetPasswordView(APIView):
             )
 
         user = prt.user
+
+        if user.check_password(pwd):
+            msg = "New password must be different from the old password"
+            return Response(
+                {
+                    "newPassword": msg,
+                    "new_password": msg,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         user.set_password(pwd)
         user.save(update_fields=["password"])
 

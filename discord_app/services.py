@@ -201,7 +201,7 @@ def _build_leave_embed(leave: LeaveRequest) -> dict:
     paid_status = display_is_paid(leave.leave_type, getattr(leave, "is_paid", None))
     is_reapply = bool(getattr(leave, "reapplied_from_id", None))
 
-    title_prefix = "RESUBMIT • " if is_reapply else ""
+    title_prefix = "RESUBMISSION • " if is_reapply else ""
     if paid_status is None:
         title = f"{title_prefix}{employee_name} - {leave.get_leave_type_display()} Leave Request"
     else:
