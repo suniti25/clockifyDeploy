@@ -10,7 +10,7 @@ services:
     command: >
       gunicorn leave_system.wsgi:application
       --bind 0.0.0.0:8000
-      --workers 3
+      --workers 5
       --timeout 120
       --access-logfile -
     ports:
@@ -23,7 +23,7 @@ services:
       - .env
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health/"]
       interval: 30s
       timeout: 10s
       retries: 3
