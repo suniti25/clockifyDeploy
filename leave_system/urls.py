@@ -1,5 +1,7 @@
 from django.contrib import admin
+from django.http import JsonResponse
 from django.urls import path, include
+from django.views.decorators.http import require_http_methods
 from drf_spectacular.views import (
     SpectacularAPIView,
     SpectacularSwaggerView,
@@ -8,8 +10,16 @@ from drf_spectacular.views import (
 
 from auth_app.views import LoginView
 
+
+@require_http_methods(["GET", "HEAD"])
+def health_check(request):
+    return JsonResponse({"status": "ok"}, status=200)
+
+
 urlpatterns = [
     path("LMS-Admin/", admin.site.urls),
+    path("health", health_check, name="health"),
+    path("health/", health_check, name="health_slash"),
     # Compatibility alias: some frontends call /login/ directly
     path("login/", LoginView.as_view(), name="login"),
     path("api/auth/", include("auth_app.urls")),

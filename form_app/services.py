@@ -169,6 +169,19 @@ def decide_leave(
                 ]
             )
 
+            # This implements: REJECT re-apply => void BOTH the new and old leave, preventing any approved leave from being active after a rejection.
+            old_id = getattr(lr, "reapplied_from_id", None)
+            if old_id:
+                old_leave = (
+                    LeaveRequest.objects.select_for_update()
+                    .select_related("employee", "employee__user")
+                    .filter(id=old_id)
+                    .first()
+                )
+                if old_leave and old_leave.status == LeaveRequest.STATUS_APPROVED:
+                    old_leave.status = LeaveRequest.STATUS_VOIDED
+                    old_leave.save(update_fields=["status"])
+
     # notifications (discord/email)
     if notify:
         notify_leave_decision(leave_id=lr.id)
@@ -180,5 +193,7 @@ def decide_leave(
             transaction.on_commit(lambda: delete_leave_events_from_google(old_leave))
     else:
         transaction.on_commit(lambda: delete_leave_events_from_google(lr))
+        if old_leave:
+            transaction.on_commit(lambda: delete_leave_events_from_google(old_leave))
 
     return lr

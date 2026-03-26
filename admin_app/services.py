@@ -368,7 +368,9 @@ class AdminRequestServices:
         """
         Global queryset for cards. No filters must be applied here.
         """
-        return LeaveRequest.objects.select_related("employee", "employee__user")
+        return LeaveRequest.objects.select_related(
+            "employee", "employee__user"
+        ).prefetch_related("days")
 
     @staticmethod
     def base_queryset(params):
@@ -376,7 +378,9 @@ class AdminRequestServices:
         Filtered queryset for the table/list. Pagination params are stripped.
         """
         filter_params = AdminRequestServices._strip_pagination_params(params)
-        qs = LeaveRequest.objects.select_related("employee", "employee__user")
+        qs = LeaveRequest.objects.select_related(
+            "employee", "employee__user"
+        ).prefetch_related("days")
         return apply_request_filters(qs, filter_params)
 
     @staticmethod
@@ -424,7 +428,9 @@ class AdminRequestServices:
         filter_params = AdminRequestServices._strip_pagination_params(params).copy()
         filter_params["status"] = LeaveRequest.STATUS_APPROVED
 
-        qs = LeaveRequest.objects.select_related("employee", "employee__user")
+        qs = LeaveRequest.objects.select_related(
+            "employee", "employee__user"
+        ).prefetch_related("days")
         qs = apply_request_filters(qs, filter_params)
 
         try:

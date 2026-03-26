@@ -1,7 +1,7 @@
 from django.db import transaction
 from rest_framework import serializers
 
-from form_app.models import LeaveRequest
+from form_app.models import LeaveRequest, Holiday
 from form_app.helpers import (
     validate_leave_application_inputs,
     compute_leave_days_for_payload,
@@ -144,3 +144,9 @@ class LeaveUpdateByBodySerializer(serializers.Serializer):
                 f"Unknown fields: {sorted(list(unknown))}"
             )
         return payload
+
+
+class HolidaySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Holiday
+        fields = ["id", "date", "name", "description", "is_active", "updated_at"]

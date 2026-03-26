@@ -3,7 +3,9 @@ import logging
 import secrets
 import threading
 import requests
+from datetime import datetime, time
 
+from django.db.models import Q
 from django.http import JsonResponse
 from django.views.decorators.http import require_http_methods
 from django.views.decorators.csrf import csrf_exempt
@@ -55,6 +57,25 @@ def _defer_ephemeral() -> JsonResponse:
     # 5 = DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE
     # data.flags=64 makes it ephemeral.
     return JsonResponse({"type": 5, "data": {"flags": 64}})
+
+
+def _send_interaction_followup(
+    *, application_id: str | None, interaction_token: str | None, content: str
+) -> None:
+    """Send an ephemeral follow-up message for a deferred interaction response."""
+    app_id = (application_id or "").strip()
+    token = (interaction_token or "").strip()
+    if not app_id or not token:
+        return
+
+    try:
+        requests.post(
+            f"{services.DISCORD_API_BASE}/webhooks/{app_id}/{token}",
+            json={"content": content, "flags": 64},
+            timeout=4,
+        )
+    except Exception:
+        logger.exception("Failed to send Discord interaction follow-up")
 
 
 def _maybe_proxy_interaction(
@@ -123,7 +144,7 @@ def discord_interactions(request):
             bool(signature),
             bool(timestamp),
         )
-        return JsonResponse({"error": "Invalid signature"}, status=401)
+        return JsonResponse({"error": ["Invalid signature"]}, status=401)
 
     # Only now is it safe to parse the body
 
@@ -131,7 +152,7 @@ def discord_interactions(request):
         data = json.loads(raw_body)
     except json.JSONDecodeError:
         logger.warning("Discord interaction rejected: invalid JSON")
-        return JsonResponse({"error": "Invalid JSON"}, status=400)
+        return JsonResponse({"error": ["Invalid JSON"]}, status=400)
 
     # If configured, proxy interactions for a specific channel to local/ngrok.
     proxied = _maybe_proxy_interaction(
@@ -228,6 +249,8 @@ def discord_interactions(request):
     if interaction_type == 5:
         custom_id = (data.get("data", {}) or {}).get("custom_id", "") or ""
         parts = custom_id.split("_")
+        application_id = str(data.get("application_id") or "")
+        interaction_token = str(data.get("token") or "")
 
         if len(parts) < 4 or parts[0] != "leave":
             return _ephemeral("Invalid modal action")
@@ -247,31 +270,58 @@ def discord_interactions(request):
 
         # APPROVE MODAL
         if parts[:3] == ["leave", "approve", "modal"]:
-            try:
-                lr = decide_leave(
-                    leave_id=leave_id,
-                    new_status="APPROVED",
-                    message=None,
-                    notify=False,
-                )
-            except LeaveRequest.DoesNotExist:
-                logger.warning(
-                    "Discord approve: LeaveRequest not found (leave_id=%s). Likely env/db mismatch.",
-                    leave_id,
-                )
-                return _ephemeral(
-                    "Leave request not found. This usually means the Discord message was created by a different environment (prod vs local) than the one handling interactions."
-                )
-            except ValueError as e:
-                logger.error("ValueError approving leave %s: %s", leave_id, e)
-                return _ephemeral(str(e))
-            except Exception:
-                logger.exception("Exception approving leave %s", leave_id)
-                return _ephemeral("Failed to approve leave")
 
-            # Notifications can be slow (Discord API / email). Run them async.
-            threading.Thread(target=_notify_async, args=(lr.id,), daemon=True).start()
-            return _ephemeral("Leave approved ✅")
+            def _approve_async() -> None:
+                try:
+                    lr = decide_leave(
+                        leave_id=leave_id,
+                        new_status="APPROVED",
+                        message=None,
+                        notify=False,
+                    )
+                except LeaveRequest.DoesNotExist:
+                    logger.warning(
+                        "Discord approve: LeaveRequest not found (leave_id=%s). Likely env/db mismatch.",
+                        leave_id,
+                    )
+                    _send_interaction_followup(
+                        application_id=application_id,
+                        interaction_token=interaction_token,
+                        content=(
+                            "Leave request not found. This usually means the Discord message was created by a different "
+                            "environment (prod vs local) than the one handling interactions."
+                        ),
+                    )
+                    return
+                except ValueError as e:
+                    logger.error("ValueError approving leave %s: %s", leave_id, e)
+                    _send_interaction_followup(
+                        application_id=application_id,
+                        interaction_token=interaction_token,
+                        content=str(e),
+                    )
+                    return
+                except Exception:
+                    logger.exception("Exception approving leave %s", leave_id)
+                    _send_interaction_followup(
+                        application_id=application_id,
+                        interaction_token=interaction_token,
+                        content="Failed to approve leave",
+                    )
+                    return
+
+                # Notifications can be slow (Discord API / email). Run them async.
+                threading.Thread(
+                    target=_notify_async, args=(lr.id,), daemon=True
+                ).start()
+                _send_interaction_followup(
+                    application_id=application_id,
+                    interaction_token=interaction_token,
+                    content="Leave approved ✅",
+                )
+
+            threading.Thread(target=_approve_async, daemon=True).start()
+            return _defer_ephemeral()
 
         # REJECT MODAL
         if parts[:3] == ["leave", "reject", "modal"]:
@@ -286,29 +336,55 @@ def discord_interactions(request):
             if not rejection_reason:
                 return _ephemeral("Rejection reason required")
 
-            try:
-                lr = decide_leave(
-                    leave_id=leave_id,
-                    new_status="REJECTED",
-                    message=rejection_reason,
-                    notify=False,
-                )
-            except LeaveRequest.DoesNotExist:
-                logger.warning(
-                    "Discord reject: LeaveRequest not found (leave_id=%s). Likely env/db mismatch.",
-                    leave_id,
-                )
-                return _ephemeral(
-                    "Leave request not found. This usually means the Discord message was created by a different environment (prod vs local) than the one handling interactions."
-                )
-            except ValueError as e:
-                return _ephemeral(str(e))
-            except Exception:
-                logger.exception("Failed to reject leave %s", leave_id)
-                return _ephemeral("Failed to reject leave")
+            def _reject_async() -> None:
+                try:
+                    lr = decide_leave(
+                        leave_id=leave_id,
+                        new_status="REJECTED",
+                        message=rejection_reason,
+                        notify=False,
+                    )
+                except LeaveRequest.DoesNotExist:
+                    logger.warning(
+                        "Discord reject: LeaveRequest not found (leave_id=%s). Likely env/db mismatch.",
+                        leave_id,
+                    )
+                    _send_interaction_followup(
+                        application_id=application_id,
+                        interaction_token=interaction_token,
+                        content=(
+                            "Leave request not found. This usually means the Discord message was created by a different "
+                            "environment (prod vs local) than the one handling interactions."
+                        ),
+                    )
+                    return
+                except ValueError as e:
+                    _send_interaction_followup(
+                        application_id=application_id,
+                        interaction_token=interaction_token,
+                        content=str(e),
+                    )
+                    return
+                except Exception:
+                    logger.exception("Failed to reject leave %s", leave_id)
+                    _send_interaction_followup(
+                        application_id=application_id,
+                        interaction_token=interaction_token,
+                        content="Failed to reject leave",
+                    )
+                    return
 
-            threading.Thread(target=_notify_async, args=(lr.id,), daemon=True).start()
-            return _ephemeral("Leave rejected ❌")
+                threading.Thread(
+                    target=_notify_async, args=(lr.id,), daemon=True
+                ).start()
+                _send_interaction_followup(
+                    application_id=application_id,
+                    interaction_token=interaction_token,
+                    content="Leave rejected ❌",
+                )
+
+            threading.Thread(target=_reject_async, daemon=True).start()
+            return _defer_ephemeral()
 
         return _ephemeral("Unhandled modal action")
 
@@ -334,7 +410,7 @@ def _cron_auth_ok(request) -> bool:
 @require_http_methods(["GET"])
 def cron_daily_on_leave(request):
     if not _cron_auth_ok(request):
-        return JsonResponse({"error": "Unauthorized"}, status=401)
+        return JsonResponse({"error": ["Unauthorized"]}, status=401)
 
     today = timezone.localdate()
 
@@ -343,9 +419,13 @@ def cron_daily_on_leave(request):
             {"status": "skipped", "reason": "weekend", "date": str(today)}
         )
 
+    start_of_today = timezone.make_aware(datetime.combine(today, time.min))
     eligible = (
         services._active_today_qs(today)
-        .filter(notified_employee_at__isnull=True)
+        .filter(
+            Q(notified_employee_at__isnull=True)
+            | Q(notified_employee_at__lt=start_of_today)
+        )
         .count()
     )
     ok = services.send_employee_on_leave_today()
@@ -366,7 +446,7 @@ def cron_daily_on_leave(request):
 @require_http_methods(["GET"])
 def cron_daily_approved(request):
     if not _cron_auth_ok(request):
-        return JsonResponse({"error": "Unauthorized"}, status=401)
+        return JsonResponse({"error": ["Unauthorized"]}, status=401)
 
     today = timezone.localdate()
 

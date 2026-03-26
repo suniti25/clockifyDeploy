@@ -20,6 +20,7 @@ from form_app.helpers import (
     overlapping_days as form_overlapping_days,
     display_is_paid,
     compute_paid_unpaid_split_for_request,
+    get_leave_selected_dates,
     _norm_status_expr,
     get_manual_used_by_type,
     normalize_leave_type,
@@ -92,7 +93,10 @@ def carry_forward_only(employee, prev_start: date, prev_end_exclusive: date) -> 
     )
 
     for lr in qs:
-        prev_used += float(lr.total_days())
+        # Only count the portion of the leave that overlaps the previous leave year.
+        # This avoids cross-renewal leaves (e.g. Mar 12–13 when renewal is Mar 13)
+        # incorrectly reducing the previous year's carry-forward.
+        prev_used += float(form_overlapping_days(lr, prev_start, prev_end_exclusive))
 
     prev_remaining = max(yearly_vacation - prev_used, 0.0)
     carry_pct = max(0, min(get_carryover_percentage(), 50))
@@ -112,6 +116,7 @@ def history_queryset(employee):
     return (
         LeaveRequest.objects.filter(employee=employee)
         .select_related("employee")
+        .prefetch_related("days")
         .order_by("-applied_at", "-id")
     )
 
@@ -263,7 +268,9 @@ def _get_profile_and_employee(request):
         return (
             None,
             None,
-            Response({"error": "Profile not found"}, status=status.HTTP_404_NOT_FOUND),
+            Response(
+                {"error": ["Profile not found"]}, status=status.HTTP_404_NOT_FOUND
+            ),
         )
 
     employee = profile.employee
@@ -272,7 +279,8 @@ def _get_profile_and_employee(request):
             profile,
             None,
             Response(
-                {"error": "Employee record not found"}, status=status.HTTP_404_NOT_FOUND
+                {"error": ["Employee record not found"]},
+                status=status.HTTP_404_NOT_FOUND,
             ),
         )
 
@@ -287,6 +295,23 @@ def _build_leave_year_context(employee) -> LeaveYearContext:
     today = timezone.localdate()
 
     leave_year_start, leave_year_end_excl = get_leave_year_range(employee, today)
+    # If the user's next approved leave starts in a *different* leave year than
+    # the one containing today, compute balances for that relevant leave year so
+    # the dashboard reflects the approved deduction the user is about to take.
+    next_approved_start = (
+        LeaveRequest.objects.filter(
+            employee=employee,
+            status="APPROVED",
+            start_date__gte=today,
+        )
+        .order_by("start_date", "id")
+        .values_list("start_date", flat=True)
+        .first()
+    )
+    if next_approved_start and next_approved_start >= leave_year_end_excl:
+        leave_year_start, leave_year_end_excl = get_leave_year_range(
+            employee, next_approved_start
+        )
     leave_year_end_incl = leave_year_end_excl - timedelta(days=1)
 
     is_on_probation = employee.is_on_probation(on_date=today)
@@ -628,11 +653,15 @@ def _serialize_upcoming(
         paid_days, unpaid_days = compute_paid_unpaid_split_for_request(
             employee=req.employee, req=req
         )
+    selected_dates, is_selective = get_leave_selected_dates(req)
+
     return {
         "id": str(req.id),
         "leave_type": label,
         "start_date": req.start_date.isoformat() if req.start_date else None,
         "end_date": req.end_date.isoformat() if req.end_date else None,
+        "dates": [d.isoformat() for d in selected_dates],
+        "is_selective": bool(is_selective),
         "days": fmt_leave_days(float(req.total_days()))
         if hasattr(req, "total_days")
         else None,
@@ -665,12 +694,16 @@ def _serialize_recent(
             employee=req.employee, req=req
         )
 
+    selected_dates, is_selective = get_leave_selected_dates(req)
+
     return {
         "id": str(req.id),
         "leave_type": leave_type_label,
         "status": (req.status or "").strip().upper(),
         "start_date": req.start_date.isoformat() if req.start_date else None,
         "end_date": req.end_date.isoformat() if req.end_date else None,
+        "dates": [d.isoformat() for d in selected_dates],
+        "is_selective": bool(is_selective),
         "days": float(req.total_days()) if hasattr(req, "total_days") else None,
         "paid_days": float(paid_days),
         "unpaid_days": float(unpaid_days),

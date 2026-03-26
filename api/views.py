@@ -42,14 +42,14 @@ def login_view(request):
     )
     if not user:
         return Response(
-            {"error": "Invalid credentials"}, status=status.HTTP_401_UNAUTHORIZED
+            {"error": ["Invalid credentials"]}, status=status.HTTP_401_UNAUTHORIZED
         )
 
     try:
         profile = Profile.objects.get(user=user)
     except Profile.DoesNotExist:
         return Response(
-            {"error": "User profile not found"}, status=status.HTTP_400_BAD_REQUEST
+            {"error": ["User profile not found"]}, status=status.HTTP_400_BAD_REQUEST
         )
 
     refresh = RefreshToken.for_user(user)
@@ -110,7 +110,7 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
 
         if status_value not in ("APPROVED", "REJECTED"):
             return Response(
-                {"error": "Invalid status"}, status=status.HTTP_400_BAD_REQUEST
+                {"error": ["Invalid status"]}, status=status.HTTP_400_BAD_REQUEST
             )
 
         leave.status = status_value
@@ -154,7 +154,7 @@ def my_leaves(request):
         profile = request.user.profile
     except Profile.DoesNotExist:
         return Response(
-            {"error": "User profile not found"}, status=status.HTTP_400_BAD_REQUEST
+            {"error": ["User profile not found"]}, status=status.HTTP_400_BAD_REQUEST
         )
 
     leaves = LeaveRequest.objects.filter(employee=profile.employee)

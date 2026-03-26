@@ -1,4 +1,5 @@
 from django.db import models
+from django.db.utils import OperationalError, ProgrammingError
 from django.core.exceptions import ValidationError
 from user_app.models import Employee
 
@@ -99,6 +100,25 @@ class LeaveRequest(models.Model):
     def total_days(self) -> float:
         import datetime
 
+        # If per-day rows exist (new behavior), compute from those.
+
+        if self.pk and hasattr(self, "days"):
+            try:
+                day_rows = list(self.days.values_list("date", "session"))
+            except (OperationalError, ProgrammingError):
+                day_rows = []
+
+            if day_rows:
+                total = 0.0
+                for d, sess in day_rows:
+                    if not d or d.weekday() >= 5:
+                        continue
+                    s = (sess or "FULL").strip().upper()
+                    if s == "FD":
+                        s = "FULL"
+                    total += 0.5 if s in ("AM", "PM") else 1.0
+                return max(float(total), 0.0)
+
         if not self.start_date or not self.end_date:
             return 0.0
 
@@ -164,3 +184,40 @@ class LeavePolicySettings(models.Model):
 
     def __str__(self) -> str:
         return "LeavePolicySettings"
+
+
+class Holiday(models.Model):
+    date = models.DateField(unique=True)
+    name = models.CharField(max_length=100)
+    description = models.TextField(blank=True, default="")
+    is_active = models.BooleanField(default=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["date"]
+        verbose_name = "Holiday"
+        verbose_name_plural = "Holidays"
+
+    def __str__(self) -> str:
+        return f"{self.date.isoformat()} - {self.name}"
+
+
+class LeaveRequestDay(models.Model):
+    leave_request = models.ForeignKey(
+        LeaveRequest, on_delete=models.CASCADE, related_name="days"
+    )
+    date = models.DateField()
+    session = models.CharField(
+        max_length=10, choices=LeaveRequest.SESSION_CHOICES, default="FULL"
+    )
+
+    class Meta:
+        ordering = ["date"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["leave_request", "date"], name="uniq_leave_request_day"
+            )
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.date.isoformat()} ({self.session})"

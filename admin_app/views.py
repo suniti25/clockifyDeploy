@@ -28,6 +28,9 @@ from .helpers import _norm_status_expr, serialize_request_for_frontend
 from .permissions import IsAdminRole
 from .serializers import (
     AdminEmployeeUpdateSerializer,
+    AdminHolidaySerializer,
+    AdminHolidayBulkCreateSerializer,
+    AdminHolidayUpsertSerializer,
     AdminUserCreateSerializer,
     AdminUserUpdateSerializer,
     AllUsersDetailSerializer,
@@ -114,7 +117,8 @@ class AdminProjectDeleteByBodyView(APIView):
         project_id = request.data.get("project_id")
         if not project_id:
             return Response(
-                {"error": "project_id is required"}, status=status.HTTP_400_BAD_REQUEST
+                {"error": ["project_id is required"]},
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         from user_app.models import Project
@@ -123,11 +127,11 @@ class AdminProjectDeleteByBodyView(APIView):
             proj = Project.objects.select_for_update().get(id=int(project_id))
         except (ValueError, TypeError):
             return Response(
-                {"error": "Invalid project_id"}, status=status.HTTP_400_BAD_REQUEST
+                {"error": ["Invalid project_id"]}, status=status.HTTP_400_BAD_REQUEST
             )
         except Project.DoesNotExist:
             return Response(
-                {"error": "Project not found"}, status=status.HTTP_404_NOT_FOUND
+                {"error": ["Project not found"]}, status=status.HTTP_404_NOT_FOUND
             )
 
         proj.is_active = False
@@ -222,7 +226,9 @@ class AllUsersDetailView(APIView):
         responses={200: AllUsersDetailSerializer(many=True)},
     )
     def get(self, request):
-        leaves_qs = LeaveRequest.objects.order_by("-applied_at", "-id")
+        leaves_qs = LeaveRequest.objects.order_by(
+            "-applied_at", "-id"
+        ).prefetch_related("days")
         params = request.GET
         raw_search = (
             (params.get("search") or "")
@@ -279,14 +285,14 @@ class UserDetailView(APIView):
             user = User.objects.select_related("profile", "employee").get(id=user_id)
         except User.DoesNotExist:
             return Response(
-                {"error": "User not found"}, status=status.HTTP_404_NOT_FOUND
+                {"error": ["User not found"]}, status=status.HTTP_404_NOT_FOUND
             )
 
         if getattr(user, "employee", None):
             user.employee.prefetched_leaves = list(
-                LeaveRequest.objects.filter(employee=user.employee).order_by(
-                    "-applied_at", "-id"
-                )
+                LeaveRequest.objects.filter(employee=user.employee)
+                .prefetch_related("days")
+                .order_by("-applied_at", "-id")
             )
 
         return Response(AllUsersDetailSerializer(user).data, status=status.HTTP_200_OK)
@@ -327,7 +333,9 @@ class EmployeesByRoleView(APIView):
         responses={200: AllUsersDetailSerializer(many=True)},
     )
     def get(self, request):
-        leaves_qs = LeaveRequest.objects.order_by("-applied_at", "-id")
+        leaves_qs = LeaveRequest.objects.order_by(
+            "-applied_at", "-id"
+        ).prefetch_related("days")
         params = request.GET
         raw_search = (
             (params.get("search") or "")
@@ -386,7 +394,7 @@ class AdminEmployeeDetailUpdateView(APIView):
             emp = Employee.objects.select_related("user").get(id=employee_id)
         except Employee.DoesNotExist:
             return Response(
-                {"error": "Employee not found"}, status=status.HTTP_404_NOT_FOUND
+                {"error": ["Employee not found"]}, status=status.HTTP_404_NOT_FOUND
             )
 
         return Response(EmployeeDetailSerializer(emp).data, status=status.HTTP_200_OK)
@@ -666,7 +674,7 @@ class AdminUserUpdateView(APIView):
                 user = User.objects.select_related("employee").get(id=user_id)
             except User.DoesNotExist:
                 return Response(
-                    {"error": "User not found"}, status=status.HTTP_404_NOT_FOUND
+                    {"error": ["User not found"]}, status=status.HTTP_404_NOT_FOUND
                 )
 
             data = ser.validated_data
@@ -729,25 +737,26 @@ class AdminUserDeleteByBodyView(APIView):
             user_id = request.data.get("user_id")
             if not user_id:
                 return Response(
-                    {"error": "user_id is required"}, status=status.HTTP_400_BAD_REQUEST
+                    {"error": ["user_id is required"]},
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
 
             try:
                 user = User.objects.select_for_update().get(id=int(user_id))
             except (User.DoesNotExist, ValueError, TypeError):
                 return Response(
-                    {"error": "User not found"}, status=status.HTTP_404_NOT_FOUND
+                    {"error": ["User not found"]}, status=status.HTTP_404_NOT_FOUND
                 )
 
             if request.user and user.id == request.user.id:
                 return Response(
-                    {"error": "You cannot delete your own account."},
+                    {"error": ["You cannot delete your own account."]},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
             if user.is_staff or user.is_superuser:
                 return Response(
-                    {"error": "Admin accounts cannot be deleted."},
+                    {"error": ["Admin accounts cannot be deleted."]},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
@@ -758,7 +767,7 @@ class AdminUserDeleteByBodyView(APIView):
 
             if getattr(target_profile, "role", None) == Profile.ROLE_ADMIN:
                 return Response(
-                    {"error": "Admin accounts cannot be deleted."},
+                    {"error": ["Admin accounts cannot be deleted."]},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
@@ -816,6 +825,260 @@ class LeavePolicySettingsView(APIView):
         ser.is_valid(raise_exception=True)
         ser.save()
         return Response(ser.data, status=status.HTTP_200_OK)
+
+
+class AdminHolidaysSettingsView(APIView):
+    permission_classes = [IsAuthenticated, IsAdminRole]
+
+    @extend_schema(
+        description=(
+            "List holidays grouped by name/description. "
+            "Multi-day holidays appear as one entry with dates array. "
+            "Use id (first/min ID) for editing/deleting."
+        ),
+        responses={200: OpenApiTypes.OBJECT},
+    )
+    def get(self, request):
+        from form_app.models import Holiday
+
+        qs = Holiday.objects.order_by("name", "description", "is_active", "date")
+
+        # Group holidays by (name, description, is_active)
+        grouped = {}
+        for holiday in qs:
+            key = (holiday.name, holiday.description, holiday.is_active)
+            if key not in grouped:
+                grouped[key] = {
+                    "id": holiday.id,  # Use first (min) ID
+                    "name": holiday.name,
+                    "description": holiday.description,
+                    "is_active": holiday.is_active,
+                    "dates": [],
+                    "updated_at": holiday.updated_at.isoformat(),
+                }
+            grouped[key]["dates"].append(holiday.date.isoformat())
+
+        result = list(grouped.values())
+        return Response(result, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        description=(
+            "Create holiday(s). Prefer sending `dates` as a list of dates "
+            "(single-day can be one-item list) to bulk-create multiple Holiday rows. "
+            "Legacy single `date` is accepted and normalized to `dates`. "
+            "Bulk mode skips dates that already exist."
+        ),
+        request=OpenApiTypes.OBJECT,
+        responses={
+            201: AdminHolidaySerializer,
+            200: OpenApiTypes.OBJECT,
+            400: OpenApiTypes.OBJECT,
+        },
+    )
+    @transaction.atomic
+    def post(self, request):
+        from form_app.models import Holiday
+
+        payload = request.data or {}
+
+        # Normalize legacy single-date payload to dates[] so clients can use one format.
+        if payload.get("date") is not None and payload.get("dates") is None:
+            payload = {**payload, "dates": [payload.get("date")]}
+
+        # Bulk mode: dates[]
+        if "dates" in payload and payload.get("dates") is not None:
+            bulk_ser = AdminHolidayBulkCreateSerializer(data=payload)
+            bulk_ser.is_valid(raise_exception=True)
+
+            raw_dates = bulk_ser.validated_data["dates"]
+            dates = sorted(set(raw_dates))
+            name = bulk_ser.validated_data["name"]
+            description = bulk_ser.validated_data.get("description", "") or ""
+            is_active = bool(bulk_ser.validated_data.get("is_active", True))
+
+            existing = set(
+                Holiday.objects.filter(date__in=dates).values_list("date", flat=True)
+            )
+            to_create = [d for d in dates if d not in existing]
+            if to_create:
+                Holiday.objects.bulk_create(
+                    [
+                        Holiday(
+                            date=d,
+                            name=name,
+                            description=description,
+                            is_active=is_active,
+                        )
+                        for d in to_create
+                    ]
+                )
+
+            # Fetch created holidays with IDs
+            created_holiday_data = []
+            if to_create:
+                created_holidays = Holiday.objects.filter(date__in=to_create).order_by(
+                    "date"
+                )
+                created_holiday_data = [
+                    {"id": h.id, "date": h.date.isoformat()} for h in created_holidays
+                ]
+
+            skipped_dates = [d.isoformat() for d in dates if d in existing]
+
+            return Response(
+                {
+                    "status": "success",
+                    "created_count": len(created_holiday_data),
+                    "skipped_count": len(skipped_dates),
+                    "created": created_holiday_data,
+                    "skipped_dates": skipped_dates,
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        # Single mode: date
+        ser = AdminHolidayUpsertSerializer(data=payload)
+        ser.is_valid(raise_exception=True)
+        holiday = ser.save()
+        return Response(
+            AdminHolidaySerializer(holiday).data, status=status.HTTP_201_CREATED
+        )
+
+    @extend_schema(
+        description=(
+            "Update a holiday by body. Provide `id` (or `holiday_id`) plus any fields to change. "
+            "Common usage: toggle `is_active` from Admin UI Settings."
+        ),
+        request=OpenApiTypes.OBJECT,
+        responses={
+            200: AdminHolidaySerializer,
+            400: OpenApiTypes.OBJECT,
+            404: OpenApiTypes.OBJECT,
+        },
+    )
+    @transaction.atomic
+    def patch(self, request):
+        from form_app.models import Holiday
+
+        raw_id = request.data.get("id") or request.data.get("holiday_id")
+        if not raw_id:
+            return Response(
+                {"error": ["id is required"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            holiday_id = int(raw_id)
+        except (TypeError, ValueError):
+            return Response(
+                {"error": ["Invalid id"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            holiday = Holiday.objects.select_for_update().get(id=holiday_id)
+        except Holiday.DoesNotExist:
+            return Response(
+                {"error": ["Holiday not found"]},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        ser = AdminHolidayUpsertSerializer(holiday, data=request.data, partial=True)
+        ser.is_valid(raise_exception=True)
+        holiday = ser.save()
+        return Response(AdminHolidaySerializer(holiday).data, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        description="Delete a holiday by body (holiday_id or id).",
+        request=OpenApiTypes.OBJECT,
+        responses={
+            200: OpenApiTypes.OBJECT,
+            400: OpenApiTypes.OBJECT,
+            404: OpenApiTypes.OBJECT,
+        },
+    )
+    @transaction.atomic
+    def delete(self, request):
+        from form_app.models import Holiday
+
+        raw_id = request.data.get("holiday_id") or request.data.get("id")
+        if not raw_id:
+            return Response(
+                {"error": ["holiday_id is required"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            holiday_id = int(raw_id)
+        except (TypeError, ValueError):
+            return Response(
+                {"error": ["Invalid holiday_id"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            holiday = Holiday.objects.select_for_update().get(id=holiday_id)
+        except Holiday.DoesNotExist:
+            return Response(
+                {"error": ["Holiday not found"]},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        holiday.delete()
+        return Response(
+            {"status": "success", "message": "Holiday deleted successfully"},
+            status=status.HTTP_200_OK,
+        )
+
+
+class AdminHolidayDeleteByBodyView(APIView):
+    permission_classes = [IsAuthenticated, IsAdminRole]
+
+    @extend_schema(
+        description="Delete a holiday by body (holiday_id or id).",
+        request=OpenApiTypes.OBJECT,
+        responses={
+            200: OpenApiTypes.OBJECT,
+            400: OpenApiTypes.OBJECT,
+            404: OpenApiTypes.OBJECT,
+        },
+    )
+    @transaction.atomic
+    def post(self, request):
+        from form_app.models import Holiday
+
+        raw_id = request.data.get("holiday_id") or request.data.get("id")
+        if not raw_id:
+            return Response(
+                {"error": ["holiday_id is required"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            holiday_id = int(raw_id)
+        except (TypeError, ValueError):
+            return Response(
+                {"error": ["Invalid holiday_id"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            holiday = Holiday.objects.select_for_update().get(id=holiday_id)
+        except Holiday.DoesNotExist:
+            return Response(
+                {"error": ["Holiday not found"]},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        holiday.delete()
+        return Response(
+            {"status": "success", "message": "Holiday deleted successfully"},
+            status=status.HTTP_200_OK,
+        )
+
+    @extend_schema(exclude=True)
+    def delete(self, request):
+        return self.post(request)
 
 
 class EmployeeRenewalScheduleView(APIView):
@@ -881,7 +1144,7 @@ class ApproveLeaveByBodyView(APIView):
 
         if not form_id:
             return Response(
-                {"error": "formID is required"}, status=status.HTTP_400_BAD_REQUEST
+                {"error": ["formID is required"]}, status=status.HTTP_400_BAD_REQUEST
             )
 
         try:
@@ -892,11 +1155,11 @@ class ApproveLeaveByBodyView(APIView):
             )
         except (ValueError, TypeError):
             return Response(
-                {"error": "Invalid formID"}, status=status.HTTP_400_BAD_REQUEST
+                {"error": ["Invalid formID"]}, status=status.HTTP_400_BAD_REQUEST
             )
         except LeaveRequest.DoesNotExist:
             return Response(
-                {"error": "Leave request not found"}, status=status.HTTP_404_NOT_FOUND
+                {"error": ["Leave request not found"]}, status=status.HTTP_404_NOT_FOUND
             )
 
         lr.refresh_from_db()
@@ -930,7 +1193,7 @@ class RejectLeaveByBodyView(APIView):
 
         if not form_id:
             return Response(
-                {"error": "formID is required"}, status=status.HTTP_400_BAD_REQUEST
+                {"error": ["formID is required"]}, status=status.HTTP_400_BAD_REQUEST
             )
 
         try:
@@ -941,11 +1204,11 @@ class RejectLeaveByBodyView(APIView):
             )
         except (ValueError, TypeError):
             return Response(
-                {"error": "Invalid formID"}, status=status.HTTP_400_BAD_REQUEST
+                {"error": ["Invalid formID"]}, status=status.HTTP_400_BAD_REQUEST
             )
         except LeaveRequest.DoesNotExist:
             return Response(
-                {"error": "Leave request not found"}, status=status.HTTP_404_NOT_FOUND
+                {"error": ["Leave request not found"]}, status=status.HTTP_404_NOT_FOUND
             )
 
         lr.refresh_from_db()
@@ -958,3 +1221,165 @@ class RejectLeaveByBodyView(APIView):
             },
             status=status.HTTP_200_OK,
         )
+
+
+class AdminLeaveDeleteByBodyView(APIView):
+    permission_classes = [IsAuthenticated, IsAdminRole]
+
+    @extend_schema(
+        description=(
+            "Delete a leave request (LeaveRequest) by body. "
+            "This intentionally uses Django-native deletion semantics (same as Django Admin delete), "
+            "including cascade deletes and model delete signals."
+        ),
+        request=OpenApiTypes.OBJECT,
+        responses={
+            200: OpenApiTypes.OBJECT,
+            400: OpenApiTypes.OBJECT,
+            404: OpenApiTypes.OBJECT,
+            409: OpenApiTypes.OBJECT,
+        },
+    )
+    @transaction.atomic
+    def post(self, request):
+        raw_id = (
+            request.data.get("formID")
+            or request.data.get("form_id")
+            or request.data.get("leave_id")
+            or request.data.get("id")
+        )
+
+        if not raw_id:
+            return Response(
+                {"error": ["formID is required"]}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            leave_id = int(raw_id)
+        except (TypeError, ValueError):
+            return Response(
+                {"error": ["Invalid formID"]}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            lr = LeaveRequest.objects.select_for_update().get(id=leave_id)
+        except LeaveRequest.DoesNotExist:
+            return Response(
+                {"error": ["Leave request not found"]},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        try:
+            lr.delete()
+        except ProtectedError:
+            return Response(
+                {
+                    "status": "error",
+                    "message": "Leave request cannot be deleted because related records exist.",
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        return Response(
+            {
+                "status": "success",
+                "message": "Leave request deleted successfully",
+                "formID": leave_id,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    @extend_schema(exclude=True)
+    def delete(self, request):
+        return self.post(request)
+
+
+class AdminRefreshDailyLeaveMessageView(APIView):
+    permission_classes = [IsAuthenticated, IsAdminRole]
+
+    @extend_schema(
+        description=(
+            "Manually refresh the employee daily leave message in Discord "
+            "(same upsert logic used by cron)."
+        ),
+        request=OpenApiTypes.OBJECT,
+        responses={
+            200: OpenApiTypes.OBJECT,
+            500: OpenApiTypes.OBJECT,
+        },
+    )
+    def post(self, request):
+        from discord_app.models import DiscordDailyMessage
+        from discord_app.services import (
+            _active_today_qs,
+            upsert_employee_on_leave_today_message,
+        )
+
+        today = timezone.localdate()
+
+        if today.weekday() in (5, 6):
+            return Response(
+                {
+                    "status": "skipped",
+                    "reason": "weekend",
+                    "date": str(today),
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        existing_record = (
+            DiscordDailyMessage.objects.filter(
+                key=DiscordDailyMessage.KEY_EMPLOYEE_ON_LEAVE_TODAY,
+                target_date=today,
+            )
+            .order_by("-id")
+            .first()
+        )
+
+        eligible_count = _active_today_qs(today).count()
+        ok = upsert_employee_on_leave_today_message(
+            target_date=today,
+            create_if_missing=True,
+        )
+
+        if not ok:
+            return Response(
+                {
+                    "status": "failed",
+                    "message": "Could not refresh daily leave message",
+                    "date": str(today),
+                    "eligible_count": eligible_count,
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        latest_record = (
+            DiscordDailyMessage.objects.filter(
+                key=DiscordDailyMessage.KEY_EMPLOYEE_ON_LEAVE_TODAY,
+                target_date=today,
+            )
+            .order_by("-id")
+            .first()
+        )
+
+        logger.info(
+            "Manual daily leave refresh by user_id=%s date=%s eligible_count=%s",
+            getattr(request.user, "id", None),
+            today,
+            eligible_count,
+        )
+
+        return Response(
+            {
+                "status": "updated" if existing_record else "created",
+                "date": str(today),
+                "eligible_count": eligible_count,
+                "channel_id": getattr(latest_record, "channel_id", None),
+                "message_id": getattr(latest_record, "message_id", None),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    @extend_schema(exclude=True)
+    def get(self, request):
+        return self.post(request)

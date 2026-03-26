@@ -8,8 +8,8 @@ from django.db import transaction
 from django.utils import timezone
 from rest_framework import serializers
 
-from form_app.models import LeaveRequest, LeavePolicySettings
-from form_app.helpers import display_is_paid
+from form_app.models import Holiday, LeaveRequest, LeavePolicySettings
+from form_app.helpers import display_is_paid, get_leave_selected_dates
 from form_app.constants import LEAVE_LIMITS
 from form_app.policies import (
     compute_probation_end_date,
@@ -30,9 +30,19 @@ from .helpers import (
 
 class LeaveMiniSerializer(serializers.ModelSerializer):
     is_paid = serializers.SerializerMethodField()
+    dates = serializers.SerializerMethodField()
+    is_selective = serializers.SerializerMethodField()
 
     def get_is_paid(self, obj):
         return display_is_paid(obj.leave_type, getattr(obj, "is_paid", None))
+
+    def get_dates(self, obj):
+        dates, _is_selective = get_leave_selected_dates(obj)
+        return [d.isoformat() for d in dates]
+
+    def get_is_selective(self, obj):
+        _dates, is_selective = get_leave_selected_dates(obj)
+        return bool(is_selective)
 
     class Meta:
         model = LeaveRequest
@@ -42,12 +52,49 @@ class LeaveMiniSerializer(serializers.ModelSerializer):
             "leave_type",
             "start_date",
             "end_date",
+            "dates",
+            "is_selective",
             "session",
             "applied_at",
             "reason",
             "is_paid",
             "rejection_reason",
         ]
+
+
+class AdminHolidaySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Holiday
+        fields = [
+            "id",
+            "date",
+            "name",
+            "description",
+            "is_active",
+            "updated_at",
+        ]
+
+
+class AdminHolidayUpsertSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Holiday
+        fields = [
+            "date",
+            "name",
+            "description",
+            "is_active",
+        ]
+
+
+class AdminHolidayBulkCreateSerializer(serializers.Serializer):
+    dates = serializers.ListField(
+        child=serializers.DateField(),
+        allow_empty=False,
+        help_text="List of holiday dates (YYYY-MM-DD). One Holiday row will be created per date.",
+    )
+    name = serializers.CharField(max_length=100)
+    description = serializers.CharField(required=False, allow_blank=True, default="")
+    is_active = serializers.BooleanField(required=False, default=True)
 
 
 class EmployeeDetailSerializer(serializers.ModelSerializer):
@@ -163,18 +210,18 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
         if pwd or cpwd:
             if pwd != cpwd:
                 raise serializers.ValidationError(
-                    {"confirm_password": "Passwords do not match."}
+                    {"confirm_password": ["Passwords do not match."]}
                 )
             if len(pwd) < 6:
                 raise serializers.ValidationError(
-                    {"password": "Password must be at least 6 characters."}
+                    {"password": ["Password must be at least 6 characters."]}
                 )
 
         if "username" in data:
             username = (data.get("username") or "").strip()
             if not username:
                 raise serializers.ValidationError(
-                    {"username": "Username cannot be empty."}
+                    {"username": ["Username cannot be empty."]}
                 )
             # Ensure uniqueness against all other users
             if (
@@ -183,27 +230,31 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
                 .exists()
             ):
                 raise serializers.ValidationError(
-                    {"username": "Username already exists."}
+                    {"username": ["Username already exists."]}
                 )
             data["username"] = username
 
         joining_date = data.get("joining_date")
         if joining_date and joining_date > timezone.localdate():
             raise serializers.ValidationError(
-                {"joining_date": "Joining date cannot be in the future."}
+                {"joining_date": ["Joining date cannot be in the future."]}
             )
 
         if "probation_end_date" in data and "probation_period_days" in data:
             raise serializers.ValidationError(
                 {
-                    "probation_period_days": "Provide either probation_end_date or probation_period_days, not both."
+                    "probation_period_days": [
+                        "Provide either probation_end_date or probation_period_days, not both."
+                    ]
                 }
             )
 
         if "project_id" in data and "current_project" in data:
             raise serializers.ValidationError(
                 {
-                    "project_id": "Provide either project_id or current_project, not both."
+                    "project_id": [
+                        "Provide either project_id or current_project, not both."
+                    ]
                 }
             )
 
@@ -211,11 +262,11 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
             project_id = data.get("project_id")
             if project_id is None:
                 raise serializers.ValidationError(
-                    {"project_id": "project_id cannot be null."}
+                    {"project_id": ["project_id cannot be null."]}
                 )
             if not Project.objects.filter(id=project_id, is_active=True).exists():
                 raise serializers.ValidationError(
-                    {"project_id": "Project not found or inactive."}
+                    {"project_id": ["Project not found or inactive."]}
                 )
 
         # Basic sanity if end date provided
@@ -225,7 +276,9 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
             if probation_end_date < joining_date:
                 raise serializers.ValidationError(
                     {
-                        "probation_end_date": "Probation end date cannot be before joining date."
+                        "probation_end_date": [
+                            "Probation end date cannot be before joining date."
+                        ]
                     }
                 )
 
@@ -254,7 +307,9 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
             elif not isinstance(overrides, dict):
                 raise serializers.ValidationError(
                     {
-                        "leave_limits_override": "Must be an object mapping leave types to numbers."
+                        "leave_limits_override": [
+                            "Must be an object mapping leave types to numbers."
+                        ]
                     }
                 )
             else:
@@ -263,14 +318,16 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
                 for raw_key, raw_val in overrides.items():
                     if not isinstance(raw_key, str):
                         raise serializers.ValidationError(
-                            {"leave_limits_override": "All keys must be strings."}
+                            {"leave_limits_override": ["All keys must be strings."]}
                         )
 
                     key = raw_key.strip()
                     if not key:
                         raise serializers.ValidationError(
                             {
-                                "leave_limits_override": "Leave type keys cannot be empty."
+                                "leave_limits_override": [
+                                    "Leave type keys cannot be empty."
+                                ]
                             }
                         )
 
@@ -434,17 +491,11 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
                     }
                 )
 
-            # Many UIs bind this form to "remaining days left" values.
-            # When apply_leave_limits_override=false (default), interpret the
-            # submitted values as desired remaining balances and convert them to
-            # yearly limits before storing. If values are unchanged, treat it as
-            # a no-op.
             if overrides is not None and not force_apply:
                 if not overrides:
                     overrides = None  # empty object => no-op
                 else:
-                    # Normalize keys so comparisons/conversion are stable across clients.
-                    # (e.g. "Vacation" vs "VACATION").
+                    # "Vacation" vs "VACATION"
                     normalized: dict[str, float] = {}
                     for k, v in overrides.items():
                         if not isinstance(k, str):
@@ -742,11 +793,11 @@ class AdminUserCreateSerializer(serializers.Serializer):
         cpwd = (data.get("confirm_password") or "").strip()
         if pwd != cpwd:
             raise serializers.ValidationError(
-                {"confirm_password": "Passwords do not match."}
+                {"confirm_password": ["Passwords do not match."]}
             )
         if len(pwd) < 6:
             raise serializers.ValidationError(
-                {"password": "Password must be at least 6 characters."}
+                {"password": ["Password must be at least 6 characters."]}
             )
 
         joining_date = data.get("joining_date")
@@ -857,9 +908,6 @@ class AdminUserUpdateSerializer(serializers.Serializer):
     current_project = serializers.CharField(
         required=False, allow_blank=True, allow_null=True
     )
-
-    # Optional per-employee leave limit overrides, e.g. {"VACATION": 18}
-    # Use null to clear overrides.
     leave_limits_override = serializers.JSONField(required=False, allow_null=True)
 
     def validate(self, data: dict[str, Any]):
@@ -874,11 +922,11 @@ class AdminUserUpdateSerializer(serializers.Serializer):
         if pwd or cpwd:
             if pwd != cpwd:
                 raise serializers.ValidationError(
-                    {"confirm_password": "Passwords do not match."}
+                    {"confirm_password": ["Passwords do not match."]}
                 )
             if len(pwd) < 6:
                 raise serializers.ValidationError(
-                    {"password": "Password must be at least 6 characters."}
+                    {"password": ["Password must be at least 6 characters."]}
                 )
 
         if "email" in data:
@@ -927,7 +975,9 @@ class AdminUserUpdateSerializer(serializers.Serializer):
             elif not isinstance(overrides, dict):
                 raise serializers.ValidationError(
                     {
-                        "leave_limits_override": "Must be an object mapping leave types to numbers."
+                        "leave_limits_override": [
+                            "Must be an object mapping leave types to numbers."
+                        ]
                     }
                 )
             else:
@@ -936,13 +986,15 @@ class AdminUserUpdateSerializer(serializers.Serializer):
                 for raw_key, raw_val in overrides.items():
                     if not isinstance(raw_key, str):
                         raise serializers.ValidationError(
-                            {"leave_limits_override": "All keys must be strings."}
+                            {"leave_limits_override": ["All keys must be strings."]}
                         )
                     key = raw_key.strip()
                     if not key:
                         raise serializers.ValidationError(
                             {
-                                "leave_limits_override": "Leave type keys cannot be empty."
+                                "leave_limits_override": [
+                                    "Leave type keys cannot be empty."
+                                ]
                             }
                         )
 
@@ -1135,5 +1187,4 @@ class LeaveRenewalOverrideSerializer(serializers.Serializer):
 
         # Note: leave_renewal_date_override is used as a month/day anchor when
         # computing leave-year windows; the year portion is not semantically
-        # important, so past dates are valid.
         return data

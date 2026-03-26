@@ -6,6 +6,10 @@ from .views import (
     AdminDashboardStatsView,
     AdminEmployeeDetailUpdateView,
     AdminEmployeeUpdateByBodyView,
+    AdminHolidayDeleteByBodyView,
+    AdminHolidaysSettingsView,
+    AdminLeaveDeleteByBodyView,
+    AdminRefreshDailyLeaveMessageView,
     AdminLeaveKPIView,
     AdminPendingRequestsView,
     AdminProjectsView,
@@ -63,6 +67,16 @@ urlpatterns = [
         "leaves/approve/", ApproveLeaveByBodyView.as_view(), name="admin-approve-leave"
     ),
     path("leaves/reject/", RejectLeaveByBodyView.as_view(), name="admin-reject-leave"),
+    path(
+        "leaves/delete/",
+        AdminLeaveDeleteByBodyView.as_view(),
+        name="admin-delete-leave",
+    ),
+    path(
+        "leaves/refresh-daily-message/",
+        AdminRefreshDailyLeaveMessageView.as_view(),
+        name="admin-refresh-daily-message",
+    ),
     # Admin Settings
     path(
         "settings/",
@@ -93,6 +107,16 @@ urlpatterns = [
                     "leave/",
                     LeavePolicySettingsView.as_view(),
                     name="admin-leave-settings",
+                ),
+                path(
+                    "holidays/",
+                    AdminHolidaysSettingsView.as_view(),
+                    name="admin-holidays-settings",
+                ),
+                path(
+                    "holidays/delete/",
+                    AdminHolidayDeleteByBodyView.as_view(),
+                    name="admin-holiday-delete",
                 ),
                 path(
                     "renewals/",

@@ -34,7 +34,7 @@ def _client_config():
     }
 
 
-@login_required
+@login_required(login_url="/LMS-Admin/login/")
 def google_connect(request):
 
     if not _is_admin_user(request.user):
@@ -75,7 +75,7 @@ def google_connect(request):
     return redirect(auth_url)
 
 
-@login_required
+@login_required(login_url="/LMS-Admin/login/")
 def google_callback(request):
     """
     Google redirects here,token and save refresh token in DB.

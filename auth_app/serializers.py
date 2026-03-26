@@ -5,6 +5,7 @@ from django.db import transaction
 from django.utils import timezone
 from django.contrib.auth.password_validation import validate_password
 from rest_framework import serializers
+from collections.abc import Mapping
 
 from user_app.models import Profile, Employee
 from form_app.policies import (
@@ -81,7 +82,7 @@ class RegisterSerializer(serializers.ModelSerializer):
 
     def validate(self, data):
         if data["password"] != data["password_confirm"]:
-            raise serializers.ValidationError({"password": "Passwords do not match"})
+            raise serializers.ValidationError({"password": ["Passwords do not match"]})
 
         try:
             validate_password((data.get("password") or "").strip())
@@ -201,13 +202,13 @@ class ResetPasswordSerializer(serializers.Serializer):
         if not pwd or not cpwd:
             errors = {}
             if not pwd:
-                errors["newPassword"] = "Password is required"
+                errors["newPassword"] = ["Password is required"]
             if not cpwd:
-                errors["newPasswordConfirm"] = "Password is required"
+                errors["newPasswordConfirm"] = ["Password is required"]
             raise serializers.ValidationError(errors)
         if pwd != cpwd:
             raise serializers.ValidationError(
-                {"newPasswordConfirm": "Passwords do not match"}
+                {"newPasswordConfirm": ["Passwords do not match"]}
             )
 
         try:
@@ -245,10 +246,69 @@ class ChangePasswordSerializer(serializers.Serializer):
         write_only=True, required=False, allow_blank=True
     )
 
+    def _prefers_camelcase_errors(self) -> bool:
+        initial = getattr(self, "initial_data", None) or {}
+        if not isinstance(initial, Mapping):
+            return False
+        return any(
+            k in initial
+            for k in (
+                "oldPassword",
+                "newPassword",
+                "confirmPassword",
+                "newPasswordConfirm",
+            )
+        )
+
+    def _pick_error_key(self, snake_key: str, camel_key: str) -> str:
+        initial = getattr(self, "initial_data", None) or {}
+        if isinstance(initial, Mapping):
+            has_snake = snake_key in initial
+            has_camel = camel_key in initial
+            if has_camel and not has_snake:
+                return camel_key
+            if has_snake and not has_camel:
+                return snake_key
+        return camel_key if self._prefers_camelcase_errors() else snake_key
+
+    def _pick_confirm_error_key(self) -> str:
+        initial = getattr(self, "initial_data", None) or {}
+        if isinstance(initial, Mapping):
+            # Prefer whichever confirm key the client actually sent.
+            if "newPasswordConfirm" in initial and "confirm_password" not in initial:
+                return "newPasswordConfirm"
+            if "confirmPassword" in initial and "confirm_password" not in initial:
+                return "confirmPassword"
+            if "confirm_password" in initial and "confirmPassword" not in initial:
+                return "confirm_password"
+        return (
+            "confirmPassword"
+            if self._prefers_camelcase_errors()
+            else "confirm_password"
+        )
+
+    @staticmethod
+    def _dedupe_messages(messages):
+        if not isinstance(messages, list):
+            return messages
+        seen = set()
+        unique = []
+        for msg in messages:
+            key = str(msg)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(msg)
+        return unique
+
     def validate(self, data):
         user = self.context.get("user")
         if not user:
             raise serializers.ValidationError("User context is required")
+
+        old_key = self._pick_error_key("old_password", "oldPassword")
+        new_key = self._pick_error_key("new_password", "newPassword")
+        confirm_key = self._pick_confirm_error_key()
 
         old_pwd = (data.get("old_password") or data.get("oldPassword") or "").strip()
         new_pwd = (data.get("new_password") or data.get("newPassword") or "").strip()
@@ -269,51 +329,42 @@ class ChangePasswordSerializer(serializers.Serializer):
             # can map field errors consistently.
             raise serializers.ValidationError(
                 {
-                    "old_password": "Old password is required",
-                    "oldPassword": "Old password is required",
+                    old_key: ["Old password is required"],
                 }
             )
 
         if not user.check_password(old_pwd):
             raise serializers.ValidationError(
                 {
-                    "old_password": "Old password is incorrect",
-                    "oldPassword": "Old password is incorrect",
+                    old_key: ["Old password is incorrect"],
                 }
             )
 
         if not new_pwd or not cpwd:
             errors = {}
             if not new_pwd:
-                errors["new_password"] = "New password is required"
-                errors["newPassword"] = "New password is required"
+                errors[new_key] = ["New password is required"]
             if not cpwd:
-                errors["confirm_password"] = "Confirm password is required"
-                errors["confirmPassword"] = "Confirm password is required"
-                errors["newPasswordConfirm"] = "Confirm password is required"
+                errors[confirm_key] = ["Confirm password is required"]
             raise serializers.ValidationError(errors)
 
         if new_pwd != cpwd:
             raise serializers.ValidationError(
                 {
-                    "confirm_password": "Passwords do not match",
-                    "confirmPassword": "Passwords do not match",
-                    "newPasswordConfirm": "Passwords do not match",
+                    confirm_key: ["Passwords do not match"],
                 }
             )
 
         # Prevent reusing the existing password.
         if user.check_password(new_pwd):
             msg = "New password must be different from the old password"
-            raise serializers.ValidationError({"new_password": msg, "newPassword": msg})
+            raise serializers.ValidationError({new_key: [msg]})
 
         try:
             validate_password(new_pwd, user=user)
         except DjangoValidationError as exc:
-            messages = list(exc.messages)
-            raise serializers.ValidationError(
-                {"new_password": messages, "newPassword": messages}
-            )
+            messages = self._dedupe_messages(list(exc.messages))
+            raise serializers.ValidationError({new_key: messages})
         return data
 
     def save(self, **kwargs):
@@ -326,3 +377,10 @@ class ChangePasswordSerializer(serializers.Serializer):
         user.set_password(new_pwd)
         user.save(update_fields=["password"])
         return user
+
+
+class RoleFromTokensSerializer(serializers.Serializer):
+    # Optional because access is usually in Authorization header and refresh in an HTTP-only cookie.
+    # The view accepts either token from header/cookie/body.
+    access = serializers.CharField(required=False, allow_blank=True)
+    refresh = serializers.CharField(required=False, allow_blank=True)

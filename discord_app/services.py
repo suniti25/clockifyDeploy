@@ -1,5 +1,5 @@
 import logging
-from datetime import date
+from datetime import date, timedelta
 
 import aiohttp
 from asgiref.sync import async_to_sync
@@ -10,6 +10,8 @@ from django.utils.html import escape
 
 from form_app.helpers import display_is_paid
 from form_app.models import LeaveRequest
+
+from discord_app.models import DiscordDailyMessage
 
 logger = logging.getLogger(__name__)
 
@@ -171,6 +173,18 @@ def _fmt_nepal_datetime(dt) -> str:
     return local_dt.strftime("%d %B %Y at %I:%M %p")
 
 
+def _count_weekdays_inclusive(start: date | None, end: date | None) -> int:
+    if not start or not end or start > end:
+        return 0
+    cur = start
+    count = 0
+    while cur <= end:
+        if cur.weekday() < 5:
+            count += 1
+        cur += timedelta(days=1)
+    return count
+
+
 def _approval_components(leave_id: int):
     return [
         {
@@ -213,6 +227,20 @@ def _build_leave_embed(leave: LeaveRequest) -> dict:
     from_to = f"{_fmt_mdY(leave.start_date)} → {_fmt_mdY(leave.end_date)}"
     applied_str = _fmt_nepal_datetime(getattr(leave, "applied_at", None))
 
+    selected_dates: list[date] = []
+    is_selective = False
+    try:
+        if hasattr(leave, "days") and leave.days.exists():
+            selected_dates = list(
+                leave.days.order_by("date").values_list("date", flat=True)
+            )
+            expected = _count_weekdays_inclusive(leave.start_date, leave.end_date)
+            # If days don't match the full weekday range, treat as selective/manual.
+            is_selective = expected > 0 and len(selected_dates) != expected
+    except Exception:
+        selected_dates = []
+        is_selective = False
+
     fields: list[dict] = []
 
     if is_reapply:
@@ -222,7 +250,19 @@ def _build_leave_embed(leave: LeaveRequest) -> dict:
         [
             {"name": "Employee Name", "value": employee_name, "inline": False},
             {"name": "Project", "value": project, "inline": False},
-            {"name": "From – To (MM-DD-YYYY)", "value": from_to, "inline": False},
+            (
+                {
+                    "name": "From – To (MM-DD-YYYY)",
+                    "value": from_to,
+                    "inline": False,
+                }
+                if not is_selective
+                else {
+                    "name": "Selected dates (MM-DD-YYYY)",
+                    "value": "—",
+                    "inline": False,
+                }
+            ),
             {
                 "name": "Leave Type",
                 "value": leave.get_leave_type_display(),
@@ -231,6 +271,18 @@ def _build_leave_embed(leave: LeaveRequest) -> dict:
             {"name": "Session", "value": leave.get_session_display(), "inline": True},
         ]
     )
+
+    if is_selective and selected_dates:
+        # Keep message readable; avoid overly long embeds.
+        shown = selected_dates[:25]
+        dates_str = ", ".join(_fmt_mdY(d) for d in shown)
+        if len(selected_dates) > len(shown):
+            dates_str += f" … (+{len(selected_dates) - len(shown)} more)"
+        # Replace the placeholder "Selected dates" field inserted above.
+        for f in fields:
+            if f.get("name") == "Selected dates (MM-DD-YYYY)":
+                f["value"] = dates_str
+                break
 
     if paid_status is not None:
         fields.append(
@@ -419,12 +471,17 @@ def send_rejected_leave_to_employees(leave: LeaveRequest) -> bool:
 
 
 def send_employee_on_leave_today():
-    today = timezone.localdate()
-    qs = _active_today_qs(today).filter(notified_employee_at__isnull=True)
-    if not qs.exists():
-        return False
+    return upsert_employee_on_leave_today_message(target_date=timezone.localdate())
 
-    lines = [f"**On Leave Today — {today.strftime('%d %b %Y')}**"]
+
+def _build_employee_on_leave_today_content(*, target_date: date) -> str:
+    qs = _active_today_qs(target_date)
+
+    lines = [f"**On Leave Today — {target_date.strftime('%d %b %Y')}**"]
+    if not qs.exists():
+        lines.append("- None")
+        return "\n".join(lines)
+
     for leave in qs:
         label = leave.get_leave_type_display()
         lt = (getattr(leave, "leave_type", "") or "").strip().upper()
@@ -434,17 +491,92 @@ def send_employee_on_leave_today():
             f"- {_employee_name(leave)} — {label} — {leave.get_session_display()}"
         )
 
-    content = "\n".join(lines)
+    return "\n".join(lines)
+
+
+def upsert_employee_on_leave_today_message(
+    *, target_date: date, create_if_missing: bool = True
+) -> bool:
+    """Create or edit the *same* daily message in #leaves-and-notices.
+
+    This enables real-time updates after the cron post (e.g., delete after 11am).
+    """
 
     employee_channel_id = getattr(settings, "DISCORD_EMPLOYEE_CHANNEL_ID", None)
-    msg_id = async_to_sync(send_discord_message)(
-        channel_id=employee_channel_id, content=content
+    try:
+        employee_channel_id_int = int(employee_channel_id)
+    except (TypeError, ValueError):
+        employee_channel_id_int = 0
+
+    if not employee_channel_id_int:
+        logger.warning(
+            "DISCORD_EMPLOYEE_CHANNEL_ID not configured; skipping on-leave-today upsert."
+        )
+        return False
+
+    content = _build_employee_on_leave_today_content(target_date=target_date)
+
+    record = (
+        DiscordDailyMessage.objects.filter(
+            key=DiscordDailyMessage.KEY_EMPLOYEE_ON_LEAVE_TODAY,
+            target_date=target_date,
+        )
+        .order_by("-id")
+        .first()
     )
 
+    if record and record.message_id and record.channel_id:
+        ok = bool(
+            async_to_sync(patch_discord_message)(
+                int(record.channel_id),
+                str(record.message_id),
+                content=content,
+            )
+        )
+        if ok:
+            DiscordDailyMessage.objects.filter(id=record.id).update(
+                channel_id=employee_channel_id_int
+            )
+            return True
+
+        # Fallback: if the stored message was deleted (e.g., Discord 404 Unknown Message),
+        # recreate and persist a fresh message id so refresh APIs do not fail permanently.
+        if create_if_missing:
+            msg_id = async_to_sync(send_discord_message)(
+                channel_id=employee_channel_id_int, content=content
+            )
+            if not msg_id:
+                return False
+
+            DiscordDailyMessage.objects.update_or_create(
+                key=DiscordDailyMessage.KEY_EMPLOYEE_ON_LEAVE_TODAY,
+                target_date=target_date,
+                defaults={
+                    "channel_id": employee_channel_id_int,
+                    "message_id": str(msg_id),
+                },
+            )
+            return True
+
+        return False
+
+    if not create_if_missing:
+        return False
+
+    msg_id = async_to_sync(send_discord_message)(
+        channel_id=employee_channel_id_int, content=content
+    )
     if not msg_id:
         return False
 
-    qs.update(notified_employee_at=timezone.now())
+    DiscordDailyMessage.objects.update_or_create(
+        key=DiscordDailyMessage.KEY_EMPLOYEE_ON_LEAVE_TODAY,
+        target_date=target_date,
+        defaults={
+            "channel_id": employee_channel_id_int,
+            "message_id": str(msg_id),
+        },
+    )
     return True
 
 

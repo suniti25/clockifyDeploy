@@ -18,7 +18,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.exceptions import TokenError
-from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
 
 from drf_spectacular.utils import extend_schema
 from drf_spectacular.types import OpenApiTypes
@@ -35,6 +35,7 @@ from .serializers import (
     ResetPasswordSerializer,
     UpdateEmailSerializer,
     ChangePasswordSerializer,
+    RoleFromTokensSerializer,
 )
 
 logger = logging.getLogger(__name__)
@@ -95,17 +96,32 @@ def _clear_refresh_cookie(response: Response, request) -> None:
 
 def _flatten_error_detail(detail):
     if isinstance(detail, list):
-        flattened = [_flatten_error_detail(x) for x in detail]
-        return flattened[0] if len(flattened) == 1 else flattened
+        return [_flatten_error_detail(x) for x in detail]
     if isinstance(detail, dict):
         return {k: _flatten_error_detail(v) for k, v in detail.items()}
     return detail
+
+
+def _coerce_error_leaves_to_lists(detail):
+    if isinstance(detail, dict):
+        return {k: _coerce_error_leaves_to_lists(v) for k, v in detail.items()}
+    if isinstance(detail, list):
+        normalized = []
+        for item in detail:
+            coerced = _coerce_error_leaves_to_lists(item)
+            if isinstance(coerced, list):
+                normalized.extend(coerced)
+            else:
+                normalized.append(coerced)
+        return normalized
+    return [detail]
 
 
 def _password_error_response(exc: DRFValidationError) -> Response:
     data = _flatten_error_detail(getattr(exc, "detail", exc))
     if isinstance(data, dict) and set(data.keys()) == {"non_field_errors"}:
         data = {"detail": data.get("non_field_errors")}
+    data = _coerce_error_leaves_to_lists(data)
     return Response(data, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -277,6 +293,117 @@ class RefreshTokenView(APIView):
             )
 
 
+class RoleView(APIView):
+    permission_classes = [AllowAny]
+
+    def _resolve_role_response(self, request) -> Response:
+        ser = RoleFromTokensSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+
+        access_raw = (ser.validated_data.get("access") or "").strip()
+        refresh_raw = (ser.validated_data.get("refresh") or "").strip()
+
+        if not access_raw:
+            auth_header = (request.headers.get("Authorization") or "").strip()
+            if auth_header.lower().startswith("bearer "):
+                access_raw = auth_header.split(" ", 1)[1].strip()
+
+        if not refresh_raw:
+            refresh_raw = (request.COOKIES.get("refresh_token") or "").strip()
+
+        if not access_raw and not refresh_raw:
+            return Response(
+                {"detail": "Either access or refresh token is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        access_user_id = None
+        refresh_user_id = None
+
+        if access_raw:
+            try:
+                access_user_id = AccessToken(access_raw).get("user_id")
+            except TokenError:
+                return Response(
+                    {"detail": "Invalid or expired access token"},
+                    status=status.HTTP_401_UNAUTHORIZED,
+                )
+
+            if not access_user_id:
+                return Response(
+                    {"detail": "Invalid access token"},
+                    status=status.HTTP_401_UNAUTHORIZED,
+                )
+
+        if refresh_raw:
+            try:
+                refresh_user_id = RefreshToken(refresh_raw).get("user_id")
+            except TokenError:
+                return Response(
+                    {"detail": "Invalid or expired refresh token"},
+                    status=status.HTTP_401_UNAUTHORIZED,
+                )
+
+            if not refresh_user_id:
+                return Response(
+                    {"detail": "Invalid refresh token"},
+                    status=status.HTTP_401_UNAUTHORIZED,
+                )
+
+        if access_user_id and refresh_user_id and access_user_id != refresh_user_id:
+            return Response(
+                {"detail": "Access/refresh token mismatch"},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        resolved_user_id = access_user_id or refresh_user_id
+
+        try:
+            user = User.objects.get(pk=resolved_user_id)
+        except User.DoesNotExist:
+            return Response(
+                {"detail": "User not found"},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        role = None
+        if getattr(user, "is_staff", False) or getattr(user, "is_superuser", False):
+            role = "ADMIN"
+        else:
+            profile = Profile.objects.filter(user=user).only("role").first()
+            role = (profile.role if profile else None) or "EMPLOYEE"
+
+        return Response({"role": str(role).upper()}, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        description=(
+            "Validate access or refresh token and return the user's role in uppercase."
+        ),
+        request=None,
+        responses={
+            200: OpenApiTypes.OBJECT,
+            400: OpenApiTypes.OBJECT,
+            401: OpenApiTypes.OBJECT,
+        },
+    )
+    def get(self, request):
+        return self._resolve_role_response(request)
+
+    @extend_schema(
+        description=(
+            "Validate access or refresh token and return the user's role in uppercase."
+        ),
+        request=RoleFromTokensSerializer,
+        responses={
+            200: OpenApiTypes.OBJECT,
+            400: OpenApiTypes.OBJECT,
+            401: OpenApiTypes.OBJECT,
+        },
+    )
+    def post(self, request):
+        return self._resolve_role_response(request)
+
+
 class ChangePasswordView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -423,10 +550,17 @@ class ResetPasswordView(APIView):
 
         if user.check_password(pwd):
             msg = "New password must be different from the old password"
+            preferred_key = (
+                "new_password"
+                if (
+                    isinstance(getattr(request, "data", None), dict)
+                    and "new_password" in request.data
+                )
+                else "newPassword"
+            )
             return Response(
                 {
-                    "newPassword": msg,
-                    "new_password": msg,
+                    preferred_key: msg,
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )

@@ -12,6 +12,7 @@ from form_app.helpers import (
     display_is_paid,
     _norm_status_expr,
     compute_paid_unpaid_split_for_request,
+    get_leave_selected_dates,
     get_manual_used_by_type,
     fmt_leave_days,
 )
@@ -184,7 +185,9 @@ def get_employee_leaves(emp) -> list[LeaveRequest]:
     leaves = getattr(emp, "prefetched_leaves", None)
     if leaves is None:
         leaves = list(
-            LeaveRequest.objects.filter(employee=emp).order_by("-applied_at", "-id")
+            LeaveRequest.objects.filter(employee=emp)
+            .prefetch_related("days")
+            .order_by("-applied_at", "-id")
         )
     return list(leaves)
 
@@ -484,6 +487,8 @@ def serialize_request_for_frontend(lr: LeaveRequest) -> Dict[str, Any]:
                 max(float(current_balance) - float(req_days), 0.0), 1
             )
 
+    selected_dates, is_selective = get_leave_selected_dates(lr)
+
     return {
         "user": {
             "username": (u.username if u else "Unknown") or "Unknown",
@@ -498,6 +503,8 @@ def serialize_request_for_frontend(lr: LeaveRequest) -> Dict[str, Any]:
         "project": getattr(emp, "current_project", None) if emp else "",
         "start_date": lr.start_date.isoformat() if lr.start_date else None,
         "end_date": lr.end_date.isoformat() if lr.end_date else None,
+        "dates": [d.isoformat() for d in selected_dates],
+        "is_selective": bool(is_selective),
         "number_of_days": fmt_leave_days(float(req_days)),
         "paid_days": fmt_leave_days(float(paid_days)),
         "unpaid_days": fmt_leave_days(float(unpaid_days)),

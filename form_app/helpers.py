@@ -4,7 +4,8 @@ from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional, Tuple
 
-from django.db.models import CharField, F, Value
+from django.db.models import CharField, Count, F, Value
+from django.db.utils import OperationalError, ProgrammingError
 from django.db.models.functions import Coalesce, Replace, Trim, Upper
 from django.utils.timezone import localdate
 from rest_framework import serializers
@@ -14,7 +15,7 @@ from form_app.policies import (
     get_carryover_percentage,
     get_leave_year_range_for_employee,
 )
-from form_app.models import LeaveRequest
+from form_app.models import Holiday, LeaveRequest, LeaveRequestDay
 
 MAX_FUTURE_DAYS = 365
 MAX_LEAVE_DAYS = 60
@@ -350,6 +351,8 @@ def validate_leave_application_inputs(
     reason: str,
     instance_id: Optional[int] = None,
     allow_overlap_with_id: Optional[int] = None,
+    allow_overlap_with_ids: Optional[list[int]] = None,
+    dates: Optional[list[date]] = None,
 ) -> Tuple[str, str]:
 
     if not profile:
@@ -363,69 +366,160 @@ def validate_leave_application_inputs(
 
     today = localdate()
 
-    if start_date is None or end_date is None:
-        raise serializers.ValidationError("Start date and end date are required.")
+    if dates is not None:
+        if not isinstance(dates, list) or not dates:
+            raise serializers.ValidationError("dates must be a non-empty list.")
+        if start_date is not None or end_date is not None:
+            raise serializers.ValidationError(
+                "Send either start_date/end_date (range) or dates[] (manual), not both."
+            )
+    else:
+        if start_date is None or end_date is None:
+            raise serializers.ValidationError("Start date and end date are required.")
 
-    if start_date < today:
-        raise serializers.ValidationError(
-            "You cannot apply leave with a start date in the past."
-        )
+    if dates is not None:
+        if any(d is None for d in dates):
+            raise serializers.ValidationError("dates contains an invalid value.")
+        if any(d < today for d in dates):
+            raise serializers.ValidationError(
+                "You cannot apply leave with a date in the past."
+            )
+        if any(d > today + timedelta(days=MAX_FUTURE_DAYS) for d in dates):
+            raise serializers.ValidationError(
+                f"You cannot apply leave more than {MAX_FUTURE_DAYS} days in the future."
+            )
+    else:
+        if start_date < today:
+            raise serializers.ValidationError(
+                "You cannot apply leave with a start date in the past."
+            )
 
-    if start_date > today + timedelta(days=MAX_FUTURE_DAYS):
-        raise serializers.ValidationError(
-            f"You cannot apply leave more than {MAX_FUTURE_DAYS} days in the future."
-        )
+        if start_date > today + timedelta(days=MAX_FUTURE_DAYS):
+            raise serializers.ValidationError(
+                f"You cannot apply leave more than {MAX_FUTURE_DAYS} days in the future."
+            )
 
-    if end_date < start_date:
+    if dates is None and end_date < start_date:
         raise serializers.ValidationError("End date cannot be earlier than start date.")
 
-    total_days = (end_date - start_date).days + 1
-    if total_days > MAX_LEAVE_DAYS:
+    # Expand requested working dates (Mon-Fri). For manual mode, reject weekend selections.
+    if dates is not None:
+        uniq = sorted(set(dates))
+        weekend = [d for d in uniq if d.weekday() >= 5]
+        if weekend:
+            raise serializers.ValidationError(
+                "Weekend date(s) are not allowed in manual selection: "
+                + ", ".join(d.isoformat() for d in weekend)
+            )
+        requested_dates = [d for d in uniq if d.weekday() < 5]
+        start_date = min(uniq)
+        end_date = max(uniq)
+    else:
+        # Range mode: include weekdays in the interval.
+        total_days = (end_date - start_date).days + 1
+        if total_days <= 0:
+            raise serializers.ValidationError(
+                "End date cannot be earlier than start date."
+            )
+        if total_days > MAX_LEAVE_DAYS:
+            raise serializers.ValidationError(
+                f"Leave duration cannot exceed {MAX_LEAVE_DAYS} days."
+            )
+
+        requested_dates = [
+            start_date + timedelta(days=i)
+            for i in range(total_days)
+            if (start_date + timedelta(days=i)).weekday() < 5
+        ]
+
+    # Holiday check should match the actual requested working days.
+    holiday_rows = list(
+        Holiday.objects.filter(
+            is_active=True,
+            date__in=requested_dates,
+        ).values_list("date", "name")
+    )
+
+    if holiday_rows:
+        parts = [
+            f"{d.isoformat()} ({n})"
+            for d, n in sorted(holiday_rows, key=lambda x: x[0])
+        ]
         raise serializers.ValidationError(
-            f"Leave duration cannot exceed {MAX_LEAVE_DAYS} days."
+            "Selected date(s) are holidays: " + ", ".join(parts)
+        )
+
+    if dates is not None and len(requested_dates) > MAX_LEAVE_DAYS:
+        raise serializers.ValidationError(
+            f"Leave duration cannot exceed {MAX_LEAVE_DAYS} working days."
         )
 
     normalized_session = normalize_session(session)
     normalized_leave_type = normalize_leave_type(leave_type)
 
-    #  the request will be rejected since if there is no working day apply for leave on weekend-only days.
-    tmp = LeaveRequest(
-        employee=employee,
-        leave_type=normalized_leave_type,
-        start_date=start_date,
-        end_date=end_date,
-        session=normalized_session,
-        start_session=normalized_session,
-        end_session=normalized_session,
-        status=LeaveRequest.STATUS_PENDING,
-    )
-    if float(tmp.total_days()) <= 0.0:
+    if not requested_dates:
         raise serializers.ValidationError(
             "Selected date range has 0 working days (weekend-only). Please choose weekdays."
         )
 
-    if normalized_leave_type in {"SICK", "WFH"} and not (reason or "").strip():
-        raise serializers.ValidationError("Reason is required for SICK and WFH leave.")
+    if not (reason or "").strip():
+        raise serializers.ValidationError("Reason is required.")
 
-    overlapping = LeaveRequest.objects.annotate(
-        _status_norm=_norm_status_expr("status")
+    # Overlap check:
+
+    days_qs = LeaveRequestDay.objects.annotate(
+        _status_norm=_norm_status_expr("leave_request__status")
     ).filter(
-        employee=employee,
-        start_date__lte=end_date,
-        end_date__gte=start_date,
+        leave_request__employee=employee,
+        date__in=requested_dates,
         _status_norm__in=[LeaveRequest.STATUS_PENDING, LeaveRequest.STATUS_APPROVED],
     )
 
+    exclude_overlap_ids: set[int] = set()
     if instance_id:
-        overlapping = overlapping.exclude(id=instance_id)
-
+        exclude_overlap_ids.add(int(instance_id))
     if allow_overlap_with_id:
-        overlapping = overlapping.exclude(id=allow_overlap_with_id)
+        exclude_overlap_ids.add(int(allow_overlap_with_id))
+    if allow_overlap_with_ids:
+        for _id in allow_overlap_with_ids:
+            if _id:
+                exclude_overlap_ids.add(int(_id))
 
-    if overlapping.exists():
+    if exclude_overlap_ids:
+        days_qs = days_qs.exclude(leave_request__id__in=exclude_overlap_ids)
+
+    if days_qs.exists():
         raise serializers.ValidationError(
-            "You already have a leave applied for this date range."
+            "You already have a leave applied for one or more selected dates."
         )
+
+    # 2) Legacy leaves that don't have LeaveRequestDay rows yet
+    legacy = (
+        LeaveRequest.objects.annotate(days_count=Count("days"))
+        .annotate(_status_norm=_norm_status_expr("status"))
+        .filter(
+            employee=employee,
+            days_count=0,
+            start_date__lte=end_date,
+            end_date__gte=start_date,
+            _status_norm__in=[
+                LeaveRequest.STATUS_PENDING,
+                LeaveRequest.STATUS_APPROVED,
+            ],
+        )
+    )
+    if exclude_overlap_ids:
+        legacy = legacy.exclude(id__in=exclude_overlap_ids)
+
+    # Confirm actual overlap by checking date membership against legacy ranges.
+    # Use iterator() to avoid loading large querysets into memory and to avoid
+    # missing overlaps due to arbitrary slicing.
+    for lr in legacy.only("start_date", "end_date").iterator(chunk_size=500):
+        for d in requested_dates:
+            if lr.start_date <= d <= lr.end_date:
+                raise serializers.ValidationError(
+                    "You already have a leave applied for one or more selected dates."
+                )
 
     return normalized_session, normalized_leave_type
 
@@ -433,6 +527,61 @@ def validate_leave_application_inputs(
 def compute_leave_days_for_payload(*, employee, payload: dict) -> float:
     temp = LeaveRequest(employee=employee, **payload)
     return float(temp.total_days())
+
+
+def count_weekdays_inclusive(start: date | None, end: date | None) -> int:
+    if not start or not end or start > end:
+        return 0
+    cur = start
+    count = 0
+    while cur <= end:
+        if cur.weekday() < 5:
+            count += 1
+        cur += timedelta(days=1)
+    return count
+
+
+def get_leave_selected_dates(req: LeaveRequest) -> tuple[list[date], bool]:
+    """Return selected working dates for a leave request.
+
+    - If LeaveRequestDay rows exist, returns those dates (sorted).
+    - Otherwise, returns all weekdays in the [start_date, end_date] range.
+
+    Also returns `is_selective`: True when LeaveRequestDay rows exist but do not
+    match the full weekday range (manual/selective choice).
+    """
+
+    if (
+        not req
+        or not getattr(req, "start_date", None)
+        or not getattr(req, "end_date", None)
+    ):
+        return [], False
+
+    selected_dates: list[date] = []
+    try:
+        if hasattr(req, "days"):
+            # Prefer prefetched related set when available.
+            selected_dates = list(
+                req.days.order_by("date").values_list("date", flat=True)
+            )
+    except (OperationalError, ProgrammingError):
+        selected_dates = []
+    except Exception:
+        selected_dates = []
+
+    if selected_dates:
+        expected = count_weekdays_inclusive(req.start_date, req.end_date)
+        is_selective = expected > 0 and len(selected_dates) != expected
+        return selected_dates, bool(is_selective)
+
+    # Fallback for legacy rows: derive weekdays from the range.
+    cur = req.start_date
+    while cur <= req.end_date:
+        if cur.weekday() < 5:
+            selected_dates.append(cur)
+        cur += timedelta(days=1)
+    return selected_dates, False
 
 
 def _round_to_half_day(value: float) -> float:
@@ -444,6 +593,28 @@ def _round_to_half_day(value: float) -> float:
 def overlapping_days(
     req: LeaveRequest, window_start: date, window_end_exclusive: date
 ) -> float:
+    # If per-day rows exist, count only those.
+    if req.pk and hasattr(req, "days"):
+        try:
+            day_rows = list(
+                req.days.filter(
+                    date__gte=window_start, date__lt=window_end_exclusive
+                ).values_list("date", "session")
+            )
+        except (OperationalError, ProgrammingError):
+            day_rows = []
+
+        if day_rows:
+            total = 0.0
+            for d, sess in day_rows:
+                if d.weekday() >= 5:
+                    continue
+                s = (sess or "FULL").strip().upper()
+                if s == "FD":
+                    s = "FULL"
+                total += 0.5 if s in {"AM", "PM"} else 1.0
+            return max(float(total), 0.0)
+
     overlap_start = max(req.start_date, window_start)
     overlap_end = min(req.end_date, window_end_exclusive - timedelta(days=1))
 

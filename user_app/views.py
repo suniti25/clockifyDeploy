@@ -17,7 +17,7 @@ from rest_framework.response import Response
 from drf_spectacular.utils import extend_schema, OpenApiParameter
 from drf_spectacular.types import OpenApiTypes
 
-from form_app.models import LeaveRequest
+from form_app.models import Holiday, LeaveRequest
 
 from .helpers import (
     _aggregate_approved_usage,
@@ -75,6 +75,7 @@ def hello_dashboard(request):
             employee=employee, status="APPROVED", start_date__gte=today
         )
         .order_by("start_date", "end_date", "id")
+        .prefetch_related("days")
         .only(
             "id",
             "leave_type",
@@ -331,7 +332,17 @@ def get_upcoming_leaves(request):
             employee=employee, status="APPROVED", start_date__gte=today
         )
         .order_by("start_date", "end_date", "id")
-        .only("id", "leave_type", "start_date", "end_date", "status", "session")
+        .prefetch_related("days")
+        .only(
+            "id",
+            "leave_type",
+            "start_date",
+            "end_date",
+            "status",
+            "session",
+            "start_session",
+            "end_session",
+        )
     )[:limit]
 
     return Response([_serialize_upcoming(req) for req in qs], status=status.HTTP_200_OK)
@@ -371,13 +382,13 @@ def get_calendar_days(request):
         month = int(month_str) if month_str else today.month
     except (TypeError, ValueError):
         return Response(
-            {"error": "Invalid year/month. Use numbers like ?year=2027&month=5"},
+            {"error": ["Invalid year/month. Use numbers like ?year=2027&month=5"]},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
     if month < 1 or month > 12:
         return Response(
-            {"error": "Invalid month. Must be between 1 and 12."},
+            {"error": ["Invalid month. Must be between 1 and 12."]},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -388,26 +399,27 @@ def get_calendar_days(request):
 
     first_weekday = (month_start.weekday() + 1) % 7
 
-    month_leaves = LeaveRequest.objects.filter(
-        employee=employee,
-        status="APPROVED",
-        start_date__lte=month_end,
-        end_date__gte=month_start,
-    ).only(
-        "start_date",
-        "end_date",
-        "leave_type",
-        "session",
-        "start_session",
-        "end_session",
+    month_leaves = (
+        LeaveRequest.objects.filter(
+            employee=employee,
+            status="APPROVED",
+            start_date__lte=month_end,
+            end_date__gte=month_start,
+        )
+        .prefetch_related("days")
+        .only(
+            "start_date",
+            "end_date",
+            "leave_type",
+            "session",
+            "start_session",
+            "end_session",
+        )
     )
 
     event_map: dict[int, list[dict]] = defaultdict(list)
 
     for leave in month_leaves:
-        current = max(leave.start_date, month_start)
-        last = min(leave.end_date, month_end)
-
         base_session = (getattr(leave, "session", "FULL") or "FULL").strip().upper()
         start_sess = (
             (getattr(leave, "start_session", base_session) or base_session)
@@ -420,39 +432,79 @@ def get_calendar_days(request):
             .upper()
         )
 
-        while current <= last:
-            if current.weekday() < 5:
-                day_session = base_session
-                if leave.start_date != leave.end_date:
-                    if current == leave.start_date:
-                        day_session = start_sess
-                    elif current == leave.end_date:
-                        day_session = end_sess
-
-                is_half_day = day_session in {"AM", "PM"}
-                leave_type_label = (
-                    leave.get_leave_type_display()
-                    if hasattr(leave, "get_leave_type_display")
-                    else (leave.leave_type or "")
+        selected_day_rows = []
+        try:
+            if hasattr(leave, "days"):
+                selected_day_rows = list(
+                    leave.days.filter(date__gte=month_start, date__lte=month_end)
+                    .order_by("date")
+                    .values_list("date", "session")
                 )
+        except Exception:
+            selected_day_rows = []
 
-                title = (
-                    f"Half day {leave_type_label} Leave ({day_session})"
-                    if is_half_day
-                    else f"{leave_type_label} Leave"
-                )
+        iter_days: list[tuple[date, str | None]] = []
+        if selected_day_rows:
+            iter_days = selected_day_rows
+        else:
+            current = max(leave.start_date, month_start)
+            last = min(leave.end_date, month_end)
+            while current <= last:
+                iter_days.append((current, None))
+                current += timedelta(days=1)
 
-                event_map[current.day].append(
-                    {
-                        "day": current.day,
-                        "type": (leave.leave_type or "").lower(),
-                        "title": title,
-                        "session": day_session,
-                        "is_half_day": bool(is_half_day),
-                    }
-                )
+        for current, explicit_session in iter_days:
+            if current.weekday() >= 5:
+                continue
 
-            current += timedelta(days=1)
+            day_session = (explicit_session or base_session or "FULL").strip().upper()
+            if day_session == "FD":
+                day_session = "FULL"
+
+            if explicit_session is None and leave.start_date != leave.end_date:
+                if current == leave.start_date:
+                    day_session = start_sess
+                elif current == leave.end_date:
+                    day_session = end_sess
+
+            is_half_day = day_session in {"AM", "PM"}
+            leave_type_label = (
+                leave.get_leave_type_display()
+                if hasattr(leave, "get_leave_type_display")
+                else (leave.leave_type or "")
+            )
+
+            title = (
+                f"Half day {leave_type_label} Leave ({day_session})"
+                if is_half_day
+                else f"{leave_type_label} Leave"
+            )
+
+            event_map[current.day].append(
+                {
+                    "day": current.day,
+                    "type": (leave.leave_type or "").lower(),
+                    "title": title,
+                    "session": day_session,
+                    "is_half_day": bool(is_half_day),
+                }
+            )
+
+    holidays = Holiday.objects.filter(
+        is_active=True,
+        date__gte=month_start,
+        date__lte=month_end,
+    ).only("date", "name", "description")
+
+    for holiday in holidays:
+        event_map[holiday.date.day].append(
+            {
+                "day": holiday.date.day,
+                "type": "holiday",
+                "title": (holiday.name or "Holiday").strip() or "Holiday",
+                "css_class": "calendar-holiday",
+            }
+        )
 
     days = [{"day": None, "events": []} for _ in range(first_weekday)]
     for day_num in range(1, days_in_month + 1):

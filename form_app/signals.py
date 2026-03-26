@@ -4,6 +4,7 @@ import threading
 from django.db import transaction
 from django.db.models.signals import post_save, post_delete
 from django.dispatch import receiver
+from django.utils import timezone
 
 from form_app.models import LeaveRequest
 
@@ -58,6 +59,36 @@ def delete_google_event_on_leave_delete(sender, instance, **kwargs):
 logger = logging.getLogger(__name__)
 
 
+def _patch_employee_on_leave_today_if_exists(instance: LeaveRequest) -> None:
+    """Patch today's 'On Leave Today' message if it was already posted.
+
+    We intentionally do NOT create the daily message here; creation is owned by the cron.
+    """
+
+    try:
+        today = timezone.localdate()
+    except Exception:
+        return
+
+    try:
+        start = getattr(instance, "start_date", None)
+        end = getattr(instance, "end_date", None)
+        if not start or not end or not (start <= today <= end):
+            return
+    except Exception:
+        return
+
+    try:
+        from discord_app.services import upsert_employee_on_leave_today_message
+
+        upsert_employee_on_leave_today_message(
+            target_date=today,
+            create_if_missing=False,
+        )
+    except Exception:
+        logger.exception("Failed patching employee daily leave message")
+
+
 @receiver(post_save, sender=LeaveRequest)
 def notify_on_leave_approval(sender, instance, created, **kwargs):
 
@@ -94,6 +125,15 @@ def notify_on_leave_approval(sender, instance, created, **kwargs):
     except Exception:
         _notify_discord()
 
+    # Real-time patch for the daily employee message (only if today's message exists).
+    if status == "APPROVED":
+        try:
+            transaction.on_commit(
+                lambda: _patch_employee_on_leave_today_if_exists(instance)
+            )
+        except Exception:
+            _patch_employee_on_leave_today_if_exists(instance)
+
     # Some leaves may be created directly as APPROVED (admin, seed, etc.)
     if status == "APPROVED":
 
@@ -112,3 +152,15 @@ def notify_on_leave_approval(sender, instance, created, **kwargs):
             )
         except Exception:
             _sync_google()
+
+
+@receiver(post_delete, sender=LeaveRequest)
+def patch_employee_daily_message_on_leave_delete(sender, instance, **kwargs):
+    """If a leave is deleted after the daily post, remove it by patching the same message."""
+
+    try:
+        transaction.on_commit(
+            lambda: _patch_employee_on_leave_today_if_exists(instance)
+        )
+    except Exception:
+        _patch_employee_on_leave_today_if_exists(instance)
