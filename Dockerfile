@@ -27,6 +27,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
     python3-pip \
     postgresql-client \
+    curl \
     && pip install --no-cache-dir setuptools wheel \
     && rm -rf /var/lib/apt/lists/*
 
