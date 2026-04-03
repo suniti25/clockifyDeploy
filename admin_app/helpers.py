@@ -16,7 +16,8 @@ from form_app.helpers import (
     get_manual_topup_by_type,
     get_manual_used_by_type,
     fmt_leave_days,
-  
+)
+
 from form_app.models import LeaveRequest
 from form_app.policies import get_leave_limits_for_employee
 from user_app.helpers import get_leave_year_range, carry_forward_only
