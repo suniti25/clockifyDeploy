@@ -6,6 +6,7 @@ from datetime import timedelta
 from django.conf import settings
 
 from form_app.models import LeaveRequest
+from form_app.helpers import get_leave_selected_dates
 from integrations.crypto import decrypt_str
 from integrations.models import GoogleCalendarCredential
 
@@ -208,16 +209,8 @@ def sync_approved_leave_to_google(leave: LeaveRequest, user=None) -> bool:
             leave.google_event_id = ""
             leave.save(update_fields=["google_event_id"])
 
-        # Create events only for weekdays
-        start_date = leave.start_date
-        end_date = leave.end_date or leave.start_date
-        total = (end_date - start_date).days + 1
-
-        leave_dates = [
-            start_date + timedelta(days=i)
-            for i in range(total)
-            if (start_date + timedelta(days=i)).weekday() < 5
-        ]
+        # Get dates based on LeaveRequestDay (if present) or fall back to range expansion
+        leave_dates, _ = get_leave_selected_dates(leave)
 
         created_ids: list[str] = []
         for day in leave_dates:

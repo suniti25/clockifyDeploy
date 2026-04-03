@@ -21,7 +21,6 @@ MAX_FUTURE_DAYS = 365
 MAX_LEAVE_DAYS = 60
 
 
-_VACATION_CARRY_RESET_ON_KEY = "_vacation_carry_reset_on"
 _MANUAL_USED_BY_YEAR_KEY = "_manual_used_by_year"
 
 
@@ -88,22 +87,6 @@ def get_manual_used_by_type(*, employee, leave_year_start: date) -> dict[str, fl
         out[lt] = float(_round_to_half_day(num))
 
     return out
-
-
-def _vacation_carry_reset_on(employee) -> Optional[date]:
-    raw = getattr(employee, "leave_limits_override", None)
-    if not isinstance(raw, dict):
-        return None
-
-    v = raw.get(_VACATION_CARRY_RESET_ON_KEY)
-    if not v:
-        return None
-
-    try:
-        # Accept either ISO date or ISO datetime strings
-        return date.fromisoformat(str(v)[:10])
-    except Exception:
-        return None
 
 
 def _is_probation_leave(*, employee, leave_start: date) -> bool:
@@ -659,15 +642,6 @@ def overlapping_days(
 
 
 def carry_forward_only(employee, prev_start: date, prev_end_exclusive: date) -> float:
-    if bool(getattr(employee, "reset_leave_balance", False)):
-        return 0.0
-
-    # If an admin explicitly set Vacation during the current leave year, suppress
-    # carry-forward from the previous year for the rest of this leave year.
-    reset_on = _vacation_carry_reset_on(employee)
-    if reset_on and reset_on >= prev_end_exclusive:
-        return 0.0
-
     joining_date = getattr(employee, "joining_date", None)
     # Carry-forward applies only if the employee was employed for the
     # Full previous leave year window.
