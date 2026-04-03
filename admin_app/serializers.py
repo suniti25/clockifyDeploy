@@ -903,6 +903,9 @@ class AdminUserUpdateSerializer(serializers.Serializer):
         required=False, allow_blank=True, allow_null=True
     )
     leave_limits_override = serializers.JSONField(required=False, allow_null=True)
+    apply_leave_limits_override = serializers.BooleanField(
+        required=False, default=False
+    )
 
     def validate(self, data: dict[str, Any]):
         user_id = data["user_id"]
@@ -960,6 +963,9 @@ class AdminUserUpdateSerializer(serializers.Serializer):
             raise serializers.ValidationError(
                 {"joining_date": "Joining date cannot be in the future."}
             )
+
+        if "leave_limits_override" not in data and "leaveLimitsOverride" in data:
+            data["leave_limits_override"] = data.get("leaveLimitsOverride")
 
         if "leave_limits_override" in data:
             overrides = data.get("leave_limits_override")
@@ -1089,8 +1095,68 @@ class AdminUserUpdateSerializer(serializers.Serializer):
 
             if "leave_limits_override" in data:
                 overrides = data.get("leave_limits_override")
-                if overrides is None:
+                original_overrides = overrides
+                force_apply = bool(data.get("apply_leave_limits_override", False))
+
+                if overrides is not None and not force_apply:
+                    if not isinstance(overrides, dict):
+                        raise serializers.ValidationError(
+                            {
+                                "leave_limits_override": (
+                                    "Must be an object mapping leave types to numbers."
+                                )
+                            }
+                        )
+
+                    if not overrides:
+                        overrides = None
+                    else:
+                        try:
+                            current_remaining = remaining_leaves(emp)
+                        except Exception:
+                            current_remaining = {}
+                        try:
+                            current_used = used_leaves_by_type(emp)
+                        except Exception:
+                            current_used = {}
+                        try:
+                            today = timezone.localdate()
+                            year_start, _year_end_excl = (
+                                get_leave_year_range_for_employee(emp, on_date=today)
+                            )
+                            vacation_carry = float(
+                                vacation_carry_forward(emp, year_start)
+                            )
+                        except Exception:
+                            vacation_carry = 0.0
+
+                        def _eq(a, b) -> bool:
+                            try:
+                                return float(a) == float(b)
+                            except Exception:
+                                return False
+
+                        if all(
+                            (k in current_remaining)
+                            and _eq(v, current_remaining.get(k))
+                            for k, v in overrides.items()
+                        ):
+                            overrides = None
+                        else:
+                            converted: dict[str, float] = {}
+                            for leave_type, desired_remaining in overrides.items():
+                                used = float(current_used.get(leave_type, 0.0) or 0.0)
+                                yearly_limit = float(desired_remaining) + used
+                                if leave_type == "VACATION":
+                                    yearly_limit -= float(vacation_carry)
+                                converted[leave_type] = max(float(yearly_limit), 0.0)
+                            overrides = converted
+
+                if overrides is None and original_overrides is not None:
+                    pass
+                elif overrides is None:
                     emp.leave_limits_override = None
+                    updates.append("leave_limits_override")
                 else:
                     existing = emp.leave_limits_override
                     if not isinstance(existing, dict):
@@ -1099,7 +1165,7 @@ class AdminUserUpdateSerializer(serializers.Serializer):
                     merged.update(overrides)
 
                     emp.leave_limits_override = merged
-                updates.append("leave_limits_override")
+                    updates.append("leave_limits_override")
 
             if updates:
                 emp.save(update_fields=updates)

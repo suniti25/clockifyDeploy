@@ -12,6 +12,7 @@ from rest_framework import status
 from rest_framework.response import Response
 
 from form_app.policies import (
+    get_leave_limits,
     get_leave_limits_for_employee,
     get_carryover_percentage,
     get_leave_year_range_for_employee,
@@ -22,6 +23,7 @@ from form_app.helpers import (
     compute_paid_unpaid_split_for_request,
     get_leave_selected_dates,
     _norm_status_expr,
+    get_manual_topup_by_type,
     get_manual_used_by_type,
     normalize_leave_type,
     fmt_leave_days,
@@ -52,8 +54,9 @@ def carry_forward_only(employee, prev_start: date, prev_end_exclusive: date) -> 
     if joining_date and joining_date > prev_start:
         return 0.0
 
-    limits = get_leave_limits_for_employee(employee)
-    yearly_vacation = float(limits.get("VACATION", 0.0))
+    # Carry-forward should be based on the standard yearly policy, not
+    # employee-specific top-ups or one-off admin corrections.
+    yearly_vacation = float(get_leave_limits().get("VACATION", 0.0))
 
     prev_used = 0.0
     qs = LeaveRequest.objects.filter(
@@ -338,6 +341,12 @@ def _aggregate_approved_usage(employee, ctx: LeaveYearContext):
     manual_used = get_manual_used_by_type(
         employee=employee, leave_year_start=ctx.leave_year_start
     )
+    manual_topup = get_manual_topup_by_type(
+        employee=employee, leave_year_start=ctx.leave_year_start
+    )
+    for lt, topup in manual_topup.items():
+        if lt in total_allowed_by_type:
+            total_allowed_by_type[lt] = float(total_allowed_by_type[lt]) + float(topup)
     for lt, allowed_total in total_allowed_by_type.items():
         mu = float(manual_used.get(lt, 0.0) or 0.0)
         if mu <= 0.0:
@@ -424,6 +433,9 @@ def precompute_paid_unpaid_splits_for_requests(
         manual_used_by_type = get_manual_used_by_type(
             employee=employee, leave_year_start=leave_year_start
         )
+        manual_topup_by_type = get_manual_topup_by_type(
+            employee=employee, leave_year_start=leave_year_start
+        )
 
         types_needed: set[str] = set()
         by_type: dict[str, list[LeaveRequest]] = {}
@@ -480,7 +492,11 @@ def precompute_paid_unpaid_splits_for_requests(
                     carry_forward_only(employee, prev_start, prev_end_excl)
                 )
 
-            total_allowed = float(limits.get(lt, 0.0)) + float(vacation_carry)
+            total_allowed = (
+                float(limits.get(lt, 0.0))
+                + float(vacation_carry)
+                + float(manual_topup_by_type.get(lt, 0.0) or 0.0)
+            )
             manual_used = float(manual_used_by_type.get(lt, 0.0) or 0.0)
             remaining = max(float(total_allowed) - float(manual_used), 0.0)
 
@@ -578,6 +594,9 @@ def _leave_balance_list(
     ]
 
     limits = get_leave_limits_for_employee(employee)
+    manual_topup = get_manual_topup_by_type(
+        employee=employee, leave_year_start=ctx.leave_year_start
+    )
     for leave_type, yearly_limit in limits.items():
         paid_used = float(paid_used_by_type.get(leave_type, 0.0))
 
@@ -587,6 +606,8 @@ def _leave_balance_list(
         if leave_type == "VACATION":
             carry_forward = float(ctx.vacation_carry)
             total_allowed += carry_forward
+
+        total_allowed += float(manual_topup.get(leave_type, 0.0) or 0.0)
 
         remaining = max(total_allowed - paid_used, 0.0)
 

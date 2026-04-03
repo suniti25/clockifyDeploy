@@ -11,6 +11,7 @@ from django.utils.timezone import localdate
 from rest_framework import serializers
 
 from form_app.policies import (
+    get_leave_limits,
     get_leave_limits_for_employee,
     get_carryover_percentage,
     get_leave_year_range_for_employee,
@@ -22,6 +23,7 @@ MAX_LEAVE_DAYS = 60
 
 
 _MANUAL_USED_BY_YEAR_KEY = "_manual_used_by_year"
+_MANUAL_TOPUP_BY_YEAR_KEY = "_manual_topup_by_year"
 
 
 def fmt_leave_days(value):
@@ -89,6 +91,50 @@ def get_manual_used_by_type(*, employee, leave_year_start: date) -> dict[str, fl
     return out
 
 
+def get_manual_topup_by_type(*, employee, leave_year_start: date) -> dict[str, float]:
+    """Return admin-specified extra allowance for the given leave year.
+
+    Stored on Employee.leave_limits_override under:
+      {"_manual_topup_by_year": {"YYYY-MM-DD": {"VACATION": 2, ...}}}
+
+    This stays scoped to one leave year so migrated-balance fixes do not turn
+    into permanent yearly entitlement changes.
+    """
+
+    raw = getattr(employee, "leave_limits_override", None)
+    if not isinstance(raw, dict):
+        return {}
+
+    by_year = raw.get(_MANUAL_TOPUP_BY_YEAR_KEY)
+    if not isinstance(by_year, dict):
+        return {}
+
+    key = leave_year_start.isoformat() if leave_year_start else None
+    if not key:
+        return {}
+
+    topup_map = by_year.get(key)
+    if not isinstance(topup_map, dict):
+        return {}
+
+    out: dict[str, float] = {}
+    for k, v in topup_map.items():
+        if not isinstance(k, str):
+            continue
+        lt = normalize_leave_type(k)
+        if not lt:
+            continue
+        try:
+            num = float(v)
+        except (TypeError, ValueError):
+            continue
+        if num < 0:
+            continue
+        out[lt] = float(_round_to_half_day(num))
+
+    return out
+
+
 def _is_probation_leave(*, employee, leave_start: date) -> bool:
     probation_end = getattr(employee, "probation_end_date", None)
     if not probation_end:
@@ -142,11 +188,15 @@ def compute_paid_unpaid_split(
         )
         vacation_carry = float(carry_forward_only(employee, prev_start, prev_end_excl))
 
-    total_allowed = float(limits[leave_type]) + float(vacation_carry)
-
     manual_used = get_manual_used_by_type(
         employee=employee, leave_year_start=leave_year_start
     ).get(leave_type, 0.0)
+    manual_topup = get_manual_topup_by_type(
+        employee=employee, leave_year_start=leave_year_start
+    ).get(leave_type, 0.0)
+    total_allowed = (
+        float(limits[leave_type]) + float(vacation_carry) + float(manual_topup)
+    )
 
     approved_qs = LeaveRequest.objects.filter(
         employee=employee,
@@ -212,7 +262,10 @@ def compute_paid_unpaid_split_for_request(
         )
         vacation_carry = float(carry_forward_only(employee, prev_start, prev_end_excl))
 
-    total_allowed = float(limits[lt]) + float(vacation_carry)
+    manual_topup = get_manual_topup_by_type(
+        employee=employee, leave_year_start=leave_year_start
+    ).get(lt, 0.0)
+    total_allowed = float(limits[lt]) + float(vacation_carry) + float(manual_topup)
     manual_used = get_manual_used_by_type(
         employee=employee, leave_year_start=leave_year_start
     ).get(lt, 0.0)
@@ -504,6 +557,34 @@ def validate_leave_application_inputs(
                     "You already have a leave applied for one or more selected dates."
                 )
 
+    # 2) Legacy leaves that don't have LeaveRequestDay rows yet
+    legacy = (
+        LeaveRequest.objects.annotate(days_count=Count("days"))
+        .annotate(_status_norm=_norm_status_expr("status"))
+        .filter(
+            employee=employee,
+            days_count=0,
+            start_date__lte=end_date,
+            end_date__gte=start_date,
+            _status_norm__in=[
+                LeaveRequest.STATUS_PENDING,
+                LeaveRequest.STATUS_APPROVED,
+            ],
+        )
+    )
+    if exclude_overlap_ids:
+        legacy = legacy.exclude(id__in=exclude_overlap_ids)
+
+    # Confirm actual overlap by checking date membership against legacy ranges.
+    # Use iterator() to avoid loading large querysets into memory and to avoid
+    # missing overlaps due to arbitrary slicing.
+    for lr in legacy.only("start_date", "end_date").iterator(chunk_size=500):
+        for d in requested_dates:
+            if lr.start_date <= d <= lr.end_date:
+                raise serializers.ValidationError(
+                    "You already have a leave applied for one or more selected dates."
+                )
+
     return normalized_session, normalized_leave_type
 
 
@@ -648,8 +729,7 @@ def carry_forward_only(employee, prev_start: date, prev_end_exclusive: date) -> 
     if joining_date and joining_date > prev_start:
         return 0.0
 
-    limits = get_leave_limits_for_employee(employee)
-    vacation_limit = float(limits.get("VACATION", 0.0))
+    vacation_limit = float(get_leave_limits().get("VACATION", 0.0))
 
     qs = LeaveRequest.objects.filter(
         employee=employee,
