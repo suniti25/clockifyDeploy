@@ -7,7 +7,7 @@ from form_app.policies import get_probation_days
 from form_app.policies import get_leave_year_range_for_employee
 
 from form_app.helpers import (
-    get_manual_topup_by_type,
+    get_manual_remaining_by_type,
     get_manual_used_by_type,
     overlapping_days,
 )
@@ -64,7 +64,7 @@ class EmployeeAdminForm(forms.ModelForm):
         super().__init__(*args, **kwargs)
         self._manual_year_start = None
         self._manual_used_initial: dict[str, float] = {}
-        self._manual_topup_initial: dict[str, float] = {}
+        self._manual_remaining_initial: dict[str, float] = {}
 
         emp = getattr(self, "instance", None)
         if not emp or not getattr(emp, "pk", None):
@@ -76,23 +76,24 @@ class EmployeeAdminForm(forms.ModelForm):
         self._manual_year_start = year_start
 
         manual_used = get_manual_used_by_type(employee=emp, leave_year_start=year_start)
-        manual_topup = get_manual_topup_by_type(
+        manual_remaining = get_manual_remaining_by_type(
             employee=emp, leave_year_start=year_start
         )
         self._manual_used_initial = dict(manual_used)
-        self._manual_topup_initial = dict(manual_topup)
+        self._manual_remaining_initial = dict(manual_remaining)
         for field_name, lt in self._MANUAL_FIELD_TO_TYPE.items():
             if lt in manual_used:
                 self.fields[field_name].initial = manual_used.get(lt)
 
         for field_name, lt in self._FIELD_TO_TYPE.items():
-            remaining = self._compute_remaining_for_type(
-                emp=emp,
-                leave_type=lt,
-                year_start=year_start,
-                manual_used=manual_used,
-                manual_topup=manual_topup,
-            )
+            remaining = manual_remaining.get(lt)
+            if remaining is None:
+                remaining = self._compute_remaining_for_type(
+                    emp=emp,
+                    leave_type=lt,
+                    year_start=year_start,
+                    manual_used=manual_used,
+                )
             self.fields[field_name].initial = remaining
 
         # Make intent clear in the UI.
@@ -153,10 +154,8 @@ class EmployeeAdminForm(forms.ModelForm):
         leave_type: str,
         year_start,
         manual_used=None,
-        manual_topup=None,
     ):
         manual_used = manual_used or {}
-        manual_topup = manual_topup or {}
         total_allowed = self._compute_total_allowed_for_type(
             emp=emp, leave_type=leave_type, year_start=year_start
         )
@@ -164,9 +163,8 @@ class EmployeeAdminForm(forms.ModelForm):
             emp=emp, leave_type=leave_type, year_start=year_start
         )
         current_manual = float(manual_used.get(leave_type, 0.0) or 0.0)
-        current_topup = float(manual_topup.get(leave_type, 0.0) or 0.0)
         return _round_to_half_day(
-            max(total_allowed + current_topup - approved_used - current_manual, 0.0)
+            max(total_allowed - approved_used - current_manual, 0.0)
         )
 
     def clean(self):
@@ -225,14 +223,14 @@ class EmployeeAdminForm(forms.ModelForm):
             if not isinstance(by_year, dict):
                 by_year = {}
             by_year = dict(by_year)
-            topup_by_year = merged.get("_manual_topup_by_year")
-            if not isinstance(topup_by_year, dict):
-                topup_by_year = {}
-            topup_by_year = dict(topup_by_year)
+            remaining_by_year = merged.get("_manual_remaining_by_year")
+            if not isinstance(remaining_by_year, dict):
+                remaining_by_year = {}
+            remaining_by_year = dict(remaining_by_year)
 
             key = year_start.isoformat()
             year_map: dict[str, float] = {}
-            topup_map: dict[str, float] = {}
+            remaining_map: dict[str, float] = {}
 
             for field_name, lt in self._MANUAL_FIELD_TO_TYPE.items():
                 v = self.cleaned_data.get(field_name)
@@ -240,49 +238,11 @@ class EmployeeAdminForm(forms.ModelForm):
                     continue
                 year_map[lt] = float(v)
 
-            changed_remaining_types = {
-                lt
-                for field_name, lt in self._FIELD_TO_TYPE.items()
-                if field_name in self.changed_data
-            }
-            changed_manual_types = {
-                lt
-                for field_name, lt in self._MANUAL_FIELD_TO_TYPE.items()
-                if field_name in self.changed_data
-            }
-
             for field_name, lt in self._FIELD_TO_TYPE.items():
                 desired_remaining = self.cleaned_data.get(field_name)
                 if desired_remaining is None:
                     continue
-
-                total_allowed = self._compute_total_allowed_for_type(
-                    emp=emp, leave_type=lt, year_start=year_start
-                )
-                approved_used = self._approved_paid_used_for_type(
-                    emp=emp, leave_type=lt, year_start=year_start
-                )
-
-                if lt in changed_remaining_types:
-                    # Remaining balance is the source of truth for this leave type.
-                    delta = float(desired_remaining) - float(
-                        total_allowed - approved_used
-                    )
-                    if delta >= 0.0:
-                        topup_map[lt] = float(_round_to_half_day(delta))
-                        year_map[lt] = 0.0
-                    else:
-                        topup_map[lt] = 0.0
-                        year_map[lt] = float(_round_to_half_day(abs(delta)))
-                    continue
-
-                if lt in changed_manual_types:
-                    base_manual = float(year_map.get(lt, 0.0) or 0.0)
-                else:
-                    base_manual = float(self._manual_used_initial.get(lt, 0.0) or 0.0)
-
-                topup_map[lt] = float(self._manual_topup_initial.get(lt, 0.0) or 0.0)
-                year_map.setdefault(lt, base_manual)
+                remaining_map[lt] = float(_round_to_half_day(desired_remaining))
 
             if year_map:
                 by_year[key] = year_map
@@ -290,23 +250,20 @@ class EmployeeAdminForm(forms.ModelForm):
                 # If all fields are blank, clear the manual-used map for this year.
                 by_year.pop(key, None)
 
-            topup_map = {
-                lt: float(v) for lt, v in topup_map.items() if float(v or 0.0) > 0.0
-            }
-            if topup_map:
-                topup_by_year[key] = topup_map
+            if remaining_map:
+                remaining_by_year[key] = remaining_map
             else:
-                topup_by_year.pop(key, None)
+                remaining_by_year.pop(key, None)
 
             if by_year:
                 merged["_manual_used_by_year"] = by_year
             else:
                 merged.pop("_manual_used_by_year", None)
 
-            if topup_by_year:
-                merged["_manual_topup_by_year"] = topup_by_year
+            if remaining_by_year:
+                merged["_manual_remaining_by_year"] = remaining_by_year
             else:
-                merged.pop("_manual_topup_by_year", None)
+                merged.pop("_manual_remaining_by_year", None)
 
             emp.leave_limits_override = merged
 

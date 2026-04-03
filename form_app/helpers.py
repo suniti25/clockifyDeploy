@@ -23,7 +23,7 @@ MAX_LEAVE_DAYS = 60
 
 
 _MANUAL_USED_BY_YEAR_KEY = "_manual_used_by_year"
-_MANUAL_TOPUP_BY_YEAR_KEY = "_manual_topup_by_year"
+_MANUAL_REMAINING_BY_YEAR_KEY = "_manual_remaining_by_year"
 
 
 def fmt_leave_days(value):
@@ -91,21 +91,20 @@ def get_manual_used_by_type(*, employee, leave_year_start: date) -> dict[str, fl
     return out
 
 
-def get_manual_topup_by_type(*, employee, leave_year_start: date) -> dict[str, float]:
-    """Return admin-specified extra allowance for the given leave year.
+def get_manual_remaining_by_type(
+    *, employee, leave_year_start: date
+) -> dict[str, float]:
+    """Return admin-specified direct remaining balances for the given leave year.
 
     Stored on Employee.leave_limits_override under:
-      {"_manual_topup_by_year": {"YYYY-MM-DD": {"VACATION": 2, ...}}}
-
-    This stays scoped to one leave year so migrated-balance fixes do not turn
-    into permanent yearly entitlement changes.
+      {"_manual_remaining_by_year": {"YYYY-MM-DD": {"VACATION": 8, ...}}}
     """
 
     raw = getattr(employee, "leave_limits_override", None)
     if not isinstance(raw, dict):
         return {}
 
-    by_year = raw.get(_MANUAL_TOPUP_BY_YEAR_KEY)
+    by_year = raw.get(_MANUAL_REMAINING_BY_YEAR_KEY)
     if not isinstance(by_year, dict):
         return {}
 
@@ -113,12 +112,12 @@ def get_manual_topup_by_type(*, employee, leave_year_start: date) -> dict[str, f
     if not key:
         return {}
 
-    topup_map = by_year.get(key)
-    if not isinstance(topup_map, dict):
+    remaining_map = by_year.get(key)
+    if not isinstance(remaining_map, dict):
         return {}
 
     out: dict[str, float] = {}
-    for k, v in topup_map.items():
+    for k, v in remaining_map.items():
         if not isinstance(k, str):
             continue
         lt = normalize_leave_type(k)
@@ -191,12 +190,7 @@ def compute_paid_unpaid_split(
     manual_used = get_manual_used_by_type(
         employee=employee, leave_year_start=leave_year_start
     ).get(leave_type, 0.0)
-    manual_topup = get_manual_topup_by_type(
-        employee=employee, leave_year_start=leave_year_start
-    ).get(leave_type, 0.0)
-    total_allowed = (
-        float(limits[leave_type]) + float(vacation_carry) + float(manual_topup)
-    )
+    total_allowed = float(limits[leave_type]) + float(vacation_carry)
 
     approved_qs = LeaveRequest.objects.filter(
         employee=employee,
@@ -262,10 +256,7 @@ def compute_paid_unpaid_split_for_request(
         )
         vacation_carry = float(carry_forward_only(employee, prev_start, prev_end_excl))
 
-    manual_topup = get_manual_topup_by_type(
-        employee=employee, leave_year_start=leave_year_start
-    ).get(lt, 0.0)
-    total_allowed = float(limits[lt]) + float(vacation_carry) + float(manual_topup)
+    total_allowed = float(limits[lt]) + float(vacation_carry)
     manual_used = get_manual_used_by_type(
         employee=employee, leave_year_start=leave_year_start
     ).get(lt, 0.0)

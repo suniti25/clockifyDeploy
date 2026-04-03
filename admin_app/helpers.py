@@ -13,7 +13,7 @@ from form_app.helpers import (
     _norm_status_expr,
     compute_paid_unpaid_split_for_request,
     get_leave_selected_dates,
-    get_manual_topup_by_type,
+    get_manual_remaining_by_type,
     get_manual_used_by_type,
     fmt_leave_days,
 )
@@ -293,10 +293,6 @@ def _aggregate_approved_usage(
 
     # Apply admin-entered manual usage as baseline used days.
     manual_used = get_manual_used_by_type(employee=emp, leave_year_start=year_start)
-    manual_topup = get_manual_topup_by_type(employee=emp, leave_year_start=year_start)
-    for lt, topup in manual_topup.items():
-        if lt in total_allowed_by_type:
-            total_allowed_by_type[lt] = float(total_allowed_by_type[lt]) + float(topup)
     for lt, allowed_total in total_allowed_by_type.items():
         mu = float(manual_used.get(lt, 0.0) or 0.0)
         if mu <= 0.0:
@@ -387,8 +383,6 @@ def total_leaves(emp) -> dict[str, float]:
 
     year_start, _year_end_excl = get_leave_year_window(emp)
     carry = float(vacation_carry_forward(emp, year_start))
-    manual_topup = get_manual_topup_by_type(employee=emp, leave_year_start=year_start)
-
     limits = get_leave_limits_for_employee(emp)
     out: dict[str, float] = {}
     for leave_type, limit in limits.items():
@@ -396,7 +390,6 @@ def total_leaves(emp) -> dict[str, float]:
         total_allowed = float(limit)
         if leave_type_u == "VACATION":
             total_allowed += float(carry)
-        total_allowed += float(manual_topup.get(leave_type_u, 0.0) or 0.0)
         out[leave_type_u] = fmt_leave_days(float(round(total_allowed, 1)))
     return out
 
@@ -412,6 +405,7 @@ def remaining_leaves(
     paid_used_by_type, _probation_total, _unpaid_total, carry, _ys, _ye = (
         _aggregate_approved_usage(emp, leaves=leaves)
     )
+    manual_remaining = get_manual_remaining_by_type(employee=emp, leave_year_start=_ys)
 
     remaining: dict[str, float] = {}
     limits = get_leave_limits_for_employee(emp)
@@ -423,9 +417,10 @@ def remaining_leaves(
             total_allowed += float(carry)
 
         used = float(paid_used_by_type.get(leave_type_u, 0.0))
-        remaining[leave_type_u] = fmt_leave_days(
-            float(round(max(total_allowed - used, 0.0), 1))
-        )
+        value = float(round(max(total_allowed - used, 0.0), 1))
+        if leave_type_u in manual_remaining:
+            value = float(manual_remaining.get(leave_type_u, 0.0) or 0.0)
+        remaining[leave_type_u] = fmt_leave_days(value)
 
     return remaining
 
@@ -446,16 +441,15 @@ def remaining_balance_for_type(emp, leave_type: str) -> Optional[float]:
     allowed = float(limits[leave_type_u])
     if leave_type_u == "VACATION":
         allowed += vacation_carry_forward(emp, year_start)
-    allowed += float(
-        get_manual_topup_by_type(employee=emp, leave_year_start=year_start).get(
-            leave_type_u, 0.0
-        )
-        or 0.0
-    )
-
     manual_used = get_manual_used_by_type(
         employee=emp, leave_year_start=year_start
     ).get(leave_type_u, 0.0)
+    manual_remaining = get_manual_remaining_by_type(
+        employee=emp, leave_year_start=year_start
+    ).get(leave_type_u, None)
+    if manual_remaining is not None:
+        return float(round(float(manual_remaining), 1))
+
     used = float(manual_used)
     qs = LeaveRequest.objects.filter(
         employee=emp,

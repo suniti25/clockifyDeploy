@@ -23,7 +23,7 @@ from form_app.helpers import (
     compute_paid_unpaid_split_for_request,
     get_leave_selected_dates,
     _norm_status_expr,
-    get_manual_topup_by_type,
+    get_manual_remaining_by_type,
     get_manual_used_by_type,
     normalize_leave_type,
     fmt_leave_days,
@@ -341,12 +341,6 @@ def _aggregate_approved_usage(employee, ctx: LeaveYearContext):
     manual_used = get_manual_used_by_type(
         employee=employee, leave_year_start=ctx.leave_year_start
     )
-    manual_topup = get_manual_topup_by_type(
-        employee=employee, leave_year_start=ctx.leave_year_start
-    )
-    for lt, topup in manual_topup.items():
-        if lt in total_allowed_by_type:
-            total_allowed_by_type[lt] = float(total_allowed_by_type[lt]) + float(topup)
     for lt, allowed_total in total_allowed_by_type.items():
         mu = float(manual_used.get(lt, 0.0) or 0.0)
         if mu <= 0.0:
@@ -433,10 +427,6 @@ def precompute_paid_unpaid_splits_for_requests(
         manual_used_by_type = get_manual_used_by_type(
             employee=employee, leave_year_start=leave_year_start
         )
-        manual_topup_by_type = get_manual_topup_by_type(
-            employee=employee, leave_year_start=leave_year_start
-        )
-
         types_needed: set[str] = set()
         by_type: dict[str, list[LeaveRequest]] = {}
         for req in group_reqs:
@@ -492,11 +482,7 @@ def precompute_paid_unpaid_splits_for_requests(
                     carry_forward_only(employee, prev_start, prev_end_excl)
                 )
 
-            total_allowed = (
-                float(limits.get(lt, 0.0))
-                + float(vacation_carry)
-                + float(manual_topup_by_type.get(lt, 0.0) or 0.0)
-            )
+            total_allowed = float(limits.get(lt, 0.0)) + float(vacation_carry)
             manual_used = float(manual_used_by_type.get(lt, 0.0) or 0.0)
             remaining = max(float(total_allowed) - float(manual_used), 0.0)
 
@@ -594,7 +580,7 @@ def _leave_balance_list(
     ]
 
     limits = get_leave_limits_for_employee(employee)
-    manual_topup = get_manual_topup_by_type(
+    manual_remaining = get_manual_remaining_by_type(
         employee=employee, leave_year_start=ctx.leave_year_start
     )
     for leave_type, yearly_limit in limits.items():
@@ -607,9 +593,9 @@ def _leave_balance_list(
             carry_forward = float(ctx.vacation_carry)
             total_allowed += carry_forward
 
-        total_allowed += float(manual_topup.get(leave_type, 0.0) or 0.0)
-
         remaining = max(total_allowed - paid_used, 0.0)
+        if leave_type in manual_remaining:
+            remaining = float(manual_remaining.get(leave_type, 0.0) or 0.0)
 
         balances.append(
             {
