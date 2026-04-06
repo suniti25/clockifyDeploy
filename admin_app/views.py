@@ -567,11 +567,10 @@ class AdminPendingRequestsView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
 
     @extend_schema(
-        description="Admin pending requests summary + recent requests + top leave takers.",
+        description="Admin pending requests summary + recent requests.",
         responses={200: OpenApiTypes.OBJECT},
     )
     def get(self, request):
-        params = request.GET
         base_qs = AdminRequestServices.unfiltered_queryset().order_by(
             "-applied_at", "-id"
         )
@@ -583,7 +582,6 @@ class AdminPendingRequestsView(APIView):
             _s=LeaveRequest.STATUS_PENDING
         )
 
-        pending_total = pending_qs.count()
         pending_requests = [serialize_request_for_frontend(lr) for lr in pending_qs]
 
         today = timezone.localdate()
@@ -603,19 +601,77 @@ class AdminPendingRequestsView(APIView):
             ),
         }
 
-        top_leave_takers = AdminRequestServices.top_leave_takers(params)
-
         return Response(
             {
                 "summary": summary,
-                "pending": pending_total,
-                "count": pending_total,
-                "top_leave_takers": top_leave_takers,
                 "pending_requests": pending_requests,
                 "recents": recent_requests,
             },
             status=status.HTTP_200_OK,
         )
+
+
+class AdminTopLeaveTakersView(APIView):
+    permission_classes = [IsAuthenticated, IsAdminRole]
+
+    @extend_schema(
+        description=(
+            "Top leave takers (approved sick leaves only). "
+            "Supports month-wise filtering via ?month=MM&year=YYYY or ?month=YYYY-MM."
+        ),
+        parameters=[
+            OpenApiParameter(
+                name="month",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description="Month selector: MM or YYYY-MM.",
+            ),
+            OpenApiParameter(
+                name="year",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description="Year for month-wise mode (e.g. ?month=4&year=2026).",
+            ),
+            OpenApiParameter(
+                name="limit",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description="Max rows to return (default 5, max 20).",
+            ),
+        ],
+        responses={200: OpenApiTypes.OBJECT},
+    )
+    def get(self, request):
+        params = request.GET.copy()
+        params["leave_type"] = "SICK"
+
+        try:
+            limit = int(params.get("limit", 5))
+        except (TypeError, ValueError):
+            limit = 5
+        limit = max(1, min(limit, 20))
+
+        top_leave_takers = AdminRequestServices.top_leave_takers(params, limit=limit)
+
+        month_raw = str(params.get("month", "")).strip()
+        year_raw = str(params.get("year", "")).strip()
+        response_data = {
+            "top_leave_takers": top_leave_takers,
+            "limit": limit,
+        }
+
+        if month_raw or year_raw:
+            try:
+                year, month = parse_kpi_month_year_params(params)
+                response_data["month"] = f"{year:04d}-{month:02d}"
+            except Exception:
+                # Defensive fallback; service gracefully handles invalid month/year too.
+                pass
+
+        return Response(response_data, status=status.HTTP_200_OK)
 
 
 class AdminUserCreateView(APIView):

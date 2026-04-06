@@ -12,6 +12,7 @@ from .views import (
     AdminRefreshDailyLeaveMessageView,
     AdminLeaveKPIView,
     AdminPendingRequestsView,
+    AdminTopLeaveTakersView,
     AdminProjectsView,
     AdminUserCreateView,
     AdminUserUpdateView,
@@ -59,6 +60,11 @@ urlpatterns = [
         "requests/pending/",
         AdminPendingRequestsView.as_view(),
         name="admin-requests-pending",
+    ),
+    path(
+        "requests/top-leave-takers/",
+        AdminTopLeaveTakersView.as_view(),
+        name="admin-top-leave-takers",
     ),
     # KPI
     path("kpis/leave/", AdminLeaveKPIView.as_view(), name="admin-leave-kpi"),

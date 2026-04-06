@@ -91,6 +91,71 @@ def _overlap_days(
     return float((e - s).days + 1)
 
 
+def _leave_days_in_window(
+    lr: LeaveRequest, window_start: date, window_end: date
+) -> float:
+    """
+    Compute leave contribution inside a date window.
+    Prefers per-day rows when present; otherwise falls back to boundary-session math.
+    Weekends are excluded to match LeaveRequest.total_days behavior.
+    """
+    s = max(lr.start_date, window_start)
+    e = min(lr.end_date, window_end)
+    if s > e:
+        return 0.0
+
+    if lr.pk and hasattr(lr, "days"):
+        try:
+            day_rows = list(
+                lr.days.filter(date__gte=s, date__lte=e).values_list("date", "session")
+            )
+        except Exception:
+            day_rows = []
+
+        if day_rows:
+            total = 0.0
+            for d, sess in day_rows:
+                if not d or d.weekday() >= 5:
+                    continue
+                val = (sess or "FULL").strip().upper()
+                if val == "FD":
+                    val = "FULL"
+                total += 0.5 if val in ("AM", "PM") else 1.0
+            return max(total, 0.0)
+
+    day_count = (e - s).days + 1
+    weekdays = 0
+    for i in range(day_count):
+        if (s + timedelta(days=i)).weekday() < 5:
+            weekdays += 1
+
+    if weekdays <= 0:
+        return 0.0
+
+    session = (lr.session or "FULL").strip().upper()
+    if session == "FD":
+        session = "FULL"
+    if session in ("AM", "PM"):
+        return float(weekdays) * 0.5
+
+    days = float(weekdays)
+    start_sess = (lr.start_session or "FULL").strip().upper()
+    end_sess = (lr.end_session or "FULL").strip().upper()
+    if start_sess == "FD":
+        start_sess = "FULL"
+    if end_sess == "FD":
+        end_sess = "FULL"
+
+    # Apply boundary half-day adjustments only when the window includes
+    # the corresponding request boundary date.
+    if s == lr.start_date and start_sess == "PM" and s.weekday() < 5:
+        days -= 0.5
+    if e == lr.end_date and end_sess == "AM" and e.weekday() < 5:
+        days -= 0.5
+
+    return max(days, 0.0)
+
+
 def _active_employee_count() -> int:
     return (
         Employee.objects.select_related("user")
@@ -420,10 +485,7 @@ class AdminRequestServices:
         params, days: int = 30, limit: int = 5
     ) -> List[Dict[str, Any]]:
         """
-        Same filters except status (approved only).
-
-        Ranking is by total approved leave days (weekdays-only=total_days),
-        not by number of requests.
+        Same filters except status.
         """
         filter_params = AdminRequestServices._strip_pagination_params(params).copy()
         filter_params["status"] = LeaveRequest.STATUS_APPROVED
@@ -432,19 +494,38 @@ class AdminRequestServices:
             "employee", "employee__user"
         ).prefetch_related("days")
         qs = apply_request_filters(qs, filter_params)
+        qs = qs.annotate(_status_norm=_norm_status_expr("status")).filter(
+            _status_norm=LeaveRequest.STATUS_APPROVED
+        )
 
-        try:
-            days = int(days)
-        except (TypeError, ValueError):
-            days = 30
-        days = max(1, min(days, 365))
+        month_raw = params.get("month") if hasattr(params, "get") else None
+        year_raw = params.get("year") if hasattr(params, "get") else None
+        has_month_window = bool(str(month_raw or "").strip()) or bool(
+            str(year_raw or "").strip()
+        )
 
-        since = timezone.now() - timedelta(days=days)
+        month_start = None
+        month_end = None
+
+        if has_month_window:
+            try:
+                year, month = parse_kpi_month_year_params(params)
+            except Exception:
+                year, month = _normalize_month_year(None, None)
+            month_start, month_end = _month_window(year, month)
+            qs = qs.filter(start_date__lte=month_end, end_date__gte=month_start)
+            source_qs = qs
+        else:
+            try:
+                days = int(days)
+            except (TypeError, ValueError):
+                days = 30
+            days = max(1, min(days, 365))
+            since = timezone.now() - timedelta(days=days)
+            source_qs = qs.filter(applied_at__gte=since)
 
         totals: Dict[int, Dict[str, Any]] = {}
-        for lr in qs.filter(applied_at__gte=since).select_related(
-            "employee", "employee__user"
-        ):
+        for lr in source_qs.select_related("employee", "employee__user"):
             emp = getattr(lr, "employee", None)
             if not emp or not getattr(emp, "id", None):
                 continue
@@ -473,7 +554,11 @@ class AdminRequestServices:
 
             rec["total_requests"] = int(rec["total_requests"]) + 1
             try:
-                rec["total_days"] = float(rec["total_days"]) + float(lr.total_days())
+                if month_start and month_end:
+                    day_contrib = _leave_days_in_window(lr, month_start, month_end)
+                else:
+                    day_contrib = float(lr.total_days())
+                rec["total_days"] = float(rec["total_days"]) + float(day_contrib)
             except Exception:
                 # If a record is malformed, skip its day contribution
                 rec["total_days"] = float(rec["total_days"]) + 0.0
