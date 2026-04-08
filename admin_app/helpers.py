@@ -19,7 +19,10 @@ from form_app.helpers import (
 )
 
 from form_app.models import LeaveRequest
-from form_app.policies import get_leave_limits_for_employee
+from form_app.policies import (
+    get_leave_limits_for_employee,
+    has_leave_limit_override_for_employee,
+)
 from user_app.helpers import get_leave_year_range, carry_forward_only
 
 
@@ -282,7 +285,10 @@ def _aggregate_approved_usage(
     total_allowed_by_type: dict[str, float] = {
         (lt or "").strip().upper(): float(limit) for lt, limit in limits.items()
     }
-    if "VACATION" in total_allowed_by_type:
+    if (
+        "VACATION" in total_allowed_by_type
+        and not has_leave_limit_override_for_employee(emp, "VACATION")
+    ):
         total_allowed_by_type["VACATION"] = float(
             total_allowed_by_type["VACATION"]
         ) + float(carry)
@@ -383,12 +389,13 @@ def total_leaves(emp) -> dict[str, float]:
 
     year_start, _year_end_excl = get_leave_year_window(emp)
     carry = float(vacation_carry_forward(emp, year_start))
+    vacation_has_override = has_leave_limit_override_for_employee(emp, "VACATION")
     limits = get_leave_limits_for_employee(emp)
     out: dict[str, float] = {}
     for leave_type, limit in limits.items():
         leave_type_u = (leave_type or "").strip().upper()
         total_allowed = float(limit)
-        if leave_type_u == "VACATION":
+        if leave_type_u == "VACATION" and not vacation_has_override:
             total_allowed += float(carry)
         out[leave_type_u] = fmt_leave_days(float(round(total_allowed, 1)))
     return out
@@ -409,11 +416,12 @@ def remaining_leaves(
 
     remaining: dict[str, float] = {}
     limits = get_leave_limits_for_employee(emp)
+    vacation_has_override = has_leave_limit_override_for_employee(emp, "VACATION")
     for leave_type, yearly_limit in limits.items():
         leave_type_u = (leave_type or "").strip().upper()
         total_allowed = float(yearly_limit)
 
-        if leave_type_u == "VACATION":
+        if leave_type_u == "VACATION" and not vacation_has_override:
             total_allowed += float(carry)
 
         used = float(paid_used_by_type.get(leave_type_u, 0.0))
@@ -439,7 +447,9 @@ def remaining_balance_for_type(emp, leave_type: str) -> Optional[float]:
     year_start, year_end_excl = get_leave_year_window(emp, today=today)
 
     allowed = float(limits[leave_type_u])
-    if leave_type_u == "VACATION":
+    if leave_type_u == "VACATION" and not has_leave_limit_override_for_employee(
+        emp, "VACATION"
+    ):
         allowed += vacation_carry_forward(emp, year_start)
     manual_used = get_manual_used_by_type(
         employee=emp, leave_year_start=year_start

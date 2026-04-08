@@ -14,6 +14,7 @@ from rest_framework.response import Response
 from form_app.policies import (
     get_leave_limits,
     get_leave_limits_for_employee,
+    has_leave_limit_override_for_employee,
     get_carryover_percentage,
     get_leave_year_range_for_employee,
 )
@@ -332,7 +333,10 @@ def _aggregate_approved_usage(employee, ctx: LeaveYearContext):
     total_allowed_by_type: dict[str, float] = {
         lt: float(limit) for lt, limit in limits.items()
     }
-    if "VACATION" in total_allowed_by_type:
+    if (
+        "VACATION" in total_allowed_by_type
+        and not has_leave_limit_override_for_employee(employee, "VACATION")
+    ):
         total_allowed_by_type["VACATION"] = float(limits.get("VACATION", 0.0)) + float(
             ctx.vacation_carry
         )
@@ -473,7 +477,9 @@ def precompute_paid_unpaid_splits_for_requests(
                     continue
 
             vacation_carry = 0.0
-            if lt == "VACATION":
+            if lt == "VACATION" and not has_leave_limit_override_for_employee(
+                employee, "VACATION"
+            ):
                 prev_day = leave_year_start - timedelta(days=1)
                 prev_start, prev_end_excl = get_leave_year_range_for_employee(
                     employee, on_date=prev_day
@@ -580,6 +586,7 @@ def _leave_balance_list(
     ]
 
     limits = get_leave_limits_for_employee(employee)
+    vacation_has_override = has_leave_limit_override_for_employee(employee, "VACATION")
     manual_remaining = get_manual_remaining_by_type(
         employee=employee, leave_year_start=ctx.leave_year_start
     )
@@ -589,7 +596,7 @@ def _leave_balance_list(
         carry_forward = 0.0
         total_allowed = float(yearly_limit)
 
-        if leave_type == "VACATION":
+        if leave_type == "VACATION" and not vacation_has_override:
             carry_forward = float(ctx.vacation_carry)
             total_allowed += carry_forward
 

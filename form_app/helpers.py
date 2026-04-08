@@ -13,6 +13,7 @@ from rest_framework import serializers
 from form_app.policies import (
     get_leave_limits,
     get_leave_limits_for_employee,
+    has_leave_limit_override_for_employee,
     get_carryover_percentage,
     get_leave_year_range_for_employee,
 )
@@ -180,7 +181,9 @@ def compute_paid_unpaid_split(
     )
 
     vacation_carry = 0.0
-    if leave_type == "VACATION":
+    if leave_type == "VACATION" and not has_leave_limit_override_for_employee(
+        employee, "VACATION"
+    ):
         prev_day = leave_year_start - timedelta(days=1)
         prev_start, prev_end_excl = get_leave_year_range_for_employee(
             employee, on_date=prev_day
@@ -249,7 +252,9 @@ def compute_paid_unpaid_split_for_request(
         return 0.0, leave_days
 
     vacation_carry = 0.0
-    if lt == "VACATION":
+    if lt == "VACATION" and not has_leave_limit_override_for_employee(
+        employee, "VACATION"
+    ):
         prev_day = leave_year_start - timedelta(days=1)
         prev_start, prev_end_excl = get_leave_year_range_for_employee(
             employee, on_date=prev_day

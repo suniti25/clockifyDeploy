@@ -84,6 +84,27 @@ def get_leave_limits_for_employee(employee) -> dict[str, float]:
     return limits
 
 
+def has_leave_limit_override_for_employee(employee, leave_type: str) -> bool:
+    """Return True when employee has an explicit top-level override for leave type."""
+
+    raw = getattr(employee, "leave_limits_override", None)
+    if not isinstance(raw, dict):
+        return False
+
+    key = (leave_type or "").strip().upper()
+    if not key:
+        return False
+
+    value = raw.get(key)
+    if value is None:
+        return False
+
+    try:
+        return float(value) >= 0.0
+    except (TypeError, ValueError):
+        return False
+
+
 def get_carryover_percentage() -> int:
     configured = int(get_leave_policy_snapshot().carryover_percentage)
     # Business rule: carryover cannot exceed 50%.

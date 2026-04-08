@@ -3,6 +3,7 @@ from datetime import timedelta
 from django.utils import timezone
 from form_app.policies import compute_probation_end_date
 from form_app.policies import get_leave_limits_for_employee
+from form_app.policies import has_leave_limit_override_for_employee
 from form_app.policies import get_probation_days
 from form_app.policies import get_leave_year_range_for_employee
 
@@ -176,7 +177,9 @@ class EmployeeAdminForm(forms.ModelForm):
     ):
         limits = get_leave_limits_for_employee(emp)
         total_allowed = float(limits.get(leave_type, 0.0))
-        if leave_type == "VACATION":
+        if leave_type == "VACATION" and not has_leave_limit_override_for_employee(
+            emp, "VACATION"
+        ):
             total_allowed += float(self._carry_forward_for_year(emp, year_start))
         return float(total_allowed)
 
