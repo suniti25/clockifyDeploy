@@ -29,6 +29,11 @@ def _round_to_half_day(value: float) -> float:
 
 
 class EmployeeAdminForm(forms.ModelForm):
+    entitlement_vacation = forms.FloatField(required=False, min_value=0)
+    entitlement_sick = forms.FloatField(required=False, min_value=0)
+    entitlement_maternity = forms.FloatField(required=False, min_value=0)
+    entitlement_paternity = forms.FloatField(required=False, min_value=0)
+    entitlement_bereavement = forms.FloatField(required=False, min_value=0)
     remaining_vacation = forms.FloatField(required=False, min_value=0)
     remaining_sick = forms.FloatField(required=False, min_value=0)
     remaining_maternity = forms.FloatField(required=False, min_value=0)
@@ -50,6 +55,14 @@ class EmployeeAdminForm(forms.ModelForm):
         "remaining_maternity": "MATERNITY",
         "remaining_paternity": "PATERNITY",
         "remaining_bereavement": "BEREAVEMENT",
+    }
+
+    _ENTITLEMENT_FIELD_TO_TYPE = {
+        "entitlement_vacation": "VACATION",
+        "entitlement_sick": "SICK",
+        "entitlement_maternity": "MATERNITY",
+        "entitlement_paternity": "PATERNITY",
+        "entitlement_bereavement": "BEREAVEMENT",
     }
 
     _MANUAL_FIELD_TO_TYPE = {
@@ -79,11 +92,24 @@ class EmployeeAdminForm(forms.ModelForm):
         manual_remaining = get_manual_remaining_by_type(
             employee=emp, leave_year_start=year_start
         )
+        existing_overrides = getattr(emp, "leave_limits_override", None)
+        if not isinstance(existing_overrides, dict):
+            existing_overrides = {}
+
         self._manual_used_initial = dict(manual_used)
         self._manual_remaining_initial = dict(manual_remaining)
         for field_name, lt in self._MANUAL_FIELD_TO_TYPE.items():
             if lt in manual_used:
                 self.fields[field_name].initial = manual_used.get(lt)
+
+        for field_name, lt in self._ENTITLEMENT_FIELD_TO_TYPE.items():
+            raw = existing_overrides.get(lt)
+            if raw is None:
+                continue
+            try:
+                self.fields[field_name].initial = float(raw)
+            except (TypeError, ValueError):
+                continue
 
         for field_name, lt in self._FIELD_TO_TYPE.items():
             remaining = manual_remaining.get(lt)
@@ -110,6 +136,13 @@ class EmployeeAdminForm(forms.ModelForm):
         )
         for field_name in self._MANUAL_FIELD_TO_TYPE.keys():
             self.fields[field_name].help_text = manual_help
+
+        entitlement_help = (
+            "Override annual leave entitlement for this employee. "
+            "Use 0.5 increments. Leave blank to use policy defaults."
+        )
+        for field_name in self._ENTITLEMENT_FIELD_TO_TYPE.keys():
+            self.fields[field_name].help_text = entitlement_help
 
     def _carry_forward_for_year(self, emp: Employee, year_start):
         if not year_start:
@@ -195,8 +228,10 @@ class EmployeeAdminForm(forms.ModelForm):
                 "Probation end date cannot be before joining date.",
             )
 
-        for field_name in list(self._FIELD_TO_TYPE.keys()) + list(
-            self._MANUAL_FIELD_TO_TYPE.keys()
+        for field_name in (
+            list(self._ENTITLEMENT_FIELD_TO_TYPE.keys())
+            + list(self._FIELD_TO_TYPE.keys())
+            + list(self._MANUAL_FIELD_TO_TYPE.keys())
         ):
             v = cleaned.get(field_name)
             if v is None:
@@ -207,17 +242,24 @@ class EmployeeAdminForm(forms.ModelForm):
     def save(self, commit=True):
         emp: Employee = super().save(commit=False)
 
+        existing = emp.leave_limits_override
+        if not isinstance(existing, dict):
+            existing = {}
+        merged = dict(existing)
+
+        for field_name, lt in self._ENTITLEMENT_FIELD_TO_TYPE.items():
+            v = self.cleaned_data.get(field_name)
+            if v is None:
+                merged.pop(lt, None)
+            else:
+                merged[lt] = float(v)
+
         if emp and getattr(emp, "pk", None):
             year_start = self._manual_year_start
             if not year_start:
                 year_start, _ = get_leave_year_range_for_employee(
                     emp, on_date=timezone.localdate()
                 )
-
-            existing = emp.leave_limits_override
-            if not isinstance(existing, dict):
-                existing = {}
-            merged = dict(existing)
 
             by_year = merged.get("_manual_used_by_year")
             if not isinstance(by_year, dict):
@@ -265,7 +307,7 @@ class EmployeeAdminForm(forms.ModelForm):
             else:
                 merged.pop("_manual_remaining_by_year", None)
 
-            emp.leave_limits_override = merged
+        emp.leave_limits_override = merged
 
         if commit:
             emp.save()
@@ -353,6 +395,18 @@ class EmployeeAdmin(admin.ModelAdmin):
                     "current_project",
                     "leave_renewal_date_override",
                     "reset_leave_balance",
+                )
+            },
+        ),
+        (
+            "Leave Entitlement Override (Per Employee)",
+            {
+                "fields": (
+                    "entitlement_vacation",
+                    "entitlement_sick",
+                    "entitlement_maternity",
+                    "entitlement_paternity",
+                    "entitlement_bereavement",
                 )
             },
         ),
