@@ -704,7 +704,7 @@ Avinto Admin Team
 <p>Regards,<br/>Avinto Admin Team</p>
 """.strip()
     else:
-        subject = "Leave Request Approved 🎉"
+        subject = "Leave Request Approved"
         message = f"""
 Dear {name},
 

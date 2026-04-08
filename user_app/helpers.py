@@ -594,8 +594,19 @@ def _leave_balance_list(
             total_allowed += carry_forward
 
         remaining = max(total_allowed - paid_used, 0.0)
+        display_total = float(total_allowed)
+        display_used = float(paid_used)
+        display_carry = float(carry_forward)
+
         if leave_type in manual_remaining:
-            remaining = float(manual_remaining.get(leave_type, 0.0) or 0.0)
+            # Manual remaining is the admin-authoritative final balance for the
+            # leave year. Keep UI numbers internally consistent for that case.
+            remaining = max(float(manual_remaining.get(leave_type, 0.0) or 0.0), 0.0)
+            display_total = max(float(yearly_limit), 0.0)
+            remaining = min(remaining, display_total)
+            display_used = max(display_total - remaining, 0.0)
+            if leave_type == "VACATION":
+                display_carry = 0.0
 
         balances.append(
             {
@@ -604,9 +615,9 @@ def _leave_balance_list(
                 "leave_year_end": ctx.leave_year_end_incl.isoformat(),
                 "next_renewal_date": next_renewal_date,
                 "renew_date": next_renewal_date,
-                "carry_forward": fmt_leave_days(carry_forward),
-                "total": fmt_leave_days(total_allowed),
-                "used": fmt_leave_days(paid_used),
+                "carry_forward": fmt_leave_days(display_carry),
+                "total": fmt_leave_days(display_total),
+                "used": fmt_leave_days(display_used),
                 "remaining": fmt_leave_days(remaining),
             }
         )
