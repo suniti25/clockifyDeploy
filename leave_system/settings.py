@@ -75,6 +75,7 @@ INSTALLED_APPS = [
     "admin_app",
     "discord_app",
     "integrations",
+    "time_tracking.apps.TimeTrackingConfig",
     "rest_framework_simplejwt.token_blacklist",
 ]
 # MIDDLEWARE
