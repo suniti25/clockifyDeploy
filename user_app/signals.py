@@ -19,7 +19,7 @@ def ensure_profile_and_employee_exist(sender, instance, created, **kwargs):
         defaults={"role": role},
     )
 
-    if role == "EMPLOYEE":
+    if role in {"EMPLOYEE", "MANAGER"}:
         joining_date = timezone.localdate()
         employee, _ = Employee.objects.get_or_create(
             user=instance,

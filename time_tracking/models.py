@@ -7,7 +7,7 @@ from django.utils import timezone
 
 
 class TimeProject(models.Model):
-    """User-scoped projects for time entries (isolated from leave `user_app.Project`)."""
+    """Global time-tracking projects (isolated from leave `user_app.Project`)."""
 
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,

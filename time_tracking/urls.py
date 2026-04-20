@@ -9,5 +9,7 @@ urlpatterns = [
     path("entries/running/", views.TimeEntryRunningView.as_view()),
     path("entries/start/", views.TimeEntryStartView.as_view()),
     path("entries/stop/", views.TimeEntryStopView.as_view()),
+    path("entries/<int:pk>/continue/", views.TimeEntryContinueView.as_view()),
+    path("entries/<int:pk>/duplicate/", views.TimeEntryDuplicateView.as_view()),
     path("entries/<int:pk>/", views.TimeEntryDetailView.as_view()),
 ]

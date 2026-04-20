@@ -4,7 +4,9 @@ from django.contrib.auth.models import User
 from django.db import transaction
 from django.utils import timezone
 
-from .models import TimeEntry
+from .models import TimeEntry, TimeProject
+
+UNSET = object()
 
 
 def get_running_entry(user: User) -> TimeEntry | None:
@@ -47,3 +49,85 @@ def stop_running_timer(*, user: User, entry_id: int | None = None) -> TimeEntry:
     entry.ended_at = timezone.now()
     entry.save(update_fields=["ended_at"])
     return entry
+
+
+@transaction.atomic
+def update_entry(
+    *,
+    user: User,
+    entry: TimeEntry,
+    project: TimeProject | None | object = UNSET,
+    description: str | None | object = UNSET,
+    started_at=UNSET,
+    ended_at=UNSET,
+) -> TimeEntry:
+    if entry.user_id != user.id:
+        raise ValueError("Entry does not belong to user.")
+
+    if project is not UNSET:
+        if isinstance(project, TimeProject):
+            if project.is_archived:
+                raise ValueError("Project is archived.")
+            entry.project = project
+        else:
+            entry.project = None
+
+    if description is not UNSET:
+        entry.description = description
+
+    if started_at is not UNSET:
+        entry.started_at = started_at
+
+    if ended_at is not UNSET:
+        entry.ended_at = ended_at
+
+    if entry.ended_at is None:
+        has_other_running = (
+            TimeEntry.objects.filter(user=user, ended_at__isnull=True)
+            .exclude(pk=entry.pk)
+            .exists()
+        )
+        if has_other_running:
+            raise ValueError(
+                "Another timer is already running. Stop it before reopening this entry."
+            )
+
+    if entry.started_at and entry.ended_at and entry.ended_at < entry.started_at:
+        raise ValueError("ended_at cannot be before started_at.")
+
+    entry.save()
+    return entry
+
+
+@transaction.atomic
+def continue_entry(*, user: User, source_entry: TimeEntry) -> TimeEntry:
+    if source_entry.user_id != user.id:
+        raise ValueError("Entry does not belong to user.")
+    if source_entry.ended_at is None:
+        raise ValueError("Cannot continue a running entry.")
+    if get_running_entry(user) is not None:
+        raise ValueError("A timer is already running. Stop it before continuing.")
+
+    return TimeEntry.objects.create(
+        user=user,
+        project=source_entry.project,
+        description=source_entry.description or "",
+        started_at=timezone.now(),
+        ended_at=None,
+    )
+
+
+@transaction.atomic
+def duplicate_entry(*, user: User, source_entry: TimeEntry) -> TimeEntry:
+    if source_entry.user_id != user.id:
+        raise ValueError("Entry does not belong to user.")
+    if source_entry.ended_at is None:
+        raise ValueError("Cannot duplicate a running entry.")
+
+    return TimeEntry.objects.create(
+        user=user,
+        project=source_entry.project,
+        description=source_entry.description or "",
+        started_at=source_entry.started_at,
+        ended_at=source_entry.ended_at,
+    )

@@ -50,10 +50,12 @@ class Project(models.Model):
 
 class Profile(models.Model):
     ROLE_EMPLOYEE = "EMPLOYEE"
+    ROLE_MANAGER = "MANAGER"
     ROLE_ADMIN = "ADMIN"
 
     ROLE_CHOICES = [
         (ROLE_EMPLOYEE, "Employee"),
+        (ROLE_MANAGER, "Manager"),
         (ROLE_ADMIN, "Admin"),
     ]
 

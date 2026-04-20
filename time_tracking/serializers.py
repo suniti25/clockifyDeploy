@@ -51,11 +51,10 @@ class TimeEntrySerializer(serializers.ModelSerializer):
         return attrs
 
     def validate_project(self, value: TimeProject | None):
-        request = self.context.get("request")
-        if value is None or request is None:
+        if value is None:
             return value
-        if value.user_id != request.user.id:
-            raise serializers.ValidationError("Invalid project for this user.")
+        if value.is_archived:
+            raise serializers.ValidationError("Project is archived.")
         return value
 
     def create(self, validated_data):
@@ -79,11 +78,7 @@ class TimeEntryStartSerializer(serializers.Serializer):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        request = self.context.get("request")
-        if request is not None:
-            self.fields["project"].queryset = TimeProject.objects.filter(
-                user=request.user, is_archived=False
-            )
+        self.fields["project"].queryset = TimeProject.objects.filter(is_archived=False)
 
 
 class TimeEntryStopSerializer(serializers.Serializer):
