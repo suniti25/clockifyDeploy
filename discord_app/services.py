@@ -8,8 +8,9 @@ from django.core.mail import send_mail
 from django.utils import timezone
 from django.utils.html import escape
 
+from django.db.models import Exists, OuterRef, Q
 from form_app.helpers import display_is_paid
-from form_app.models import LeaveRequest
+from form_app.models import LeaveRequest, LeaveRequestDay
 
 from discord_app.models import DiscordDailyMessage
 
@@ -396,8 +397,21 @@ update_discord_leave_message = update_admin_leave_message
 
 def _active_today_qs(target_date: date):
     """Approved leaves that are ACTIVE today (on leave today)."""
+    has_target_day = Exists(
+        LeaveRequestDay.objects.filter(
+            leave_request=OuterRef("pk"),
+            date=target_date,
+        )
+    )
+    has_any_day = Exists(LeaveRequestDay.objects.filter(leave_request=OuterRef("pk")))
+
     return (
-        LeaveRequest.objects.filter(
+        LeaveRequest.objects.annotate(
+            has_target_day=has_target_day,
+            has_any_day=has_any_day,
+        )
+        .filter(
+            Q(has_target_day=True) | Q(has_any_day=False),
             status="APPROVED",
             start_date__lte=target_date,
             end_date__gte=target_date,

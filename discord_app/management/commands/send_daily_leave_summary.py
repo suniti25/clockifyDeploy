@@ -1,10 +1,7 @@
-from collections import defaultdict
-
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
-from form_app.models import LeaveRequest
-from discord_app.services import send_daily_summary
+from discord_app.services import _active_today_qs, send_employee_on_leave_today
 
 
 class Command(BaseCommand):
@@ -13,21 +10,10 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         today = timezone.localdate()
 
-        # Fetch only leaves active today
-        approved_requests = LeaveRequest.objects.filter(
-            status="APPROVED",
-            start_date__lte=today,
-            end_date__gte=today,
-        ).select_related("employee")
+        active_count = _active_today_qs(today).count()
 
-        leaves_by_date = defaultdict(list)
-
-        # Since we only care about today, no need to loop through date ranges
-        for leave in approved_requests:
-            leaves_by_date[today].append(leave)
-
-        if leaves_by_date:
-            success = send_daily_summary(dict(leaves_by_date))
+        if active_count:
+            success = send_employee_on_leave_today()
             if success:
                 self.stdout.write(self.style.SUCCESS("Daily summary sent successfully"))
             else:

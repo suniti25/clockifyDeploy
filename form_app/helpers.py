@@ -25,6 +25,7 @@ MAX_LEAVE_DAYS = 60
 
 _MANUAL_USED_BY_YEAR_KEY = "_manual_used_by_year"
 _MANUAL_REMAINING_BY_YEAR_KEY = "_manual_remaining_by_year"
+_MANUAL_REMAINING_USED_SNAPSHOT_BY_YEAR_KEY = "_manual_remaining_used_snapshot_by_year"
 
 
 def fmt_leave_days(value):
@@ -135,6 +136,101 @@ def get_manual_remaining_by_type(
     return out
 
 
+def get_manual_remaining_used_baseline(
+    *,
+    employee,
+    leave_year_start: date,
+    leave_type: str,
+    yearly_limit: float,
+) -> Optional[float]:
+    """Return the used-days baseline implied by an admin remaining override.
+
+    A manual remaining balance should correct the starting balance for the year,
+    but future approved leaves must still reduce that balance. The derived
+    baseline is therefore treated as a minimum used amount, not as a fixed final
+    remaining value.
+    """
+
+    lt = normalize_leave_type(leave_type)
+    if not lt:
+        return None
+
+    manual_remaining = get_manual_remaining_by_type(
+        employee=employee, leave_year_start=leave_year_start
+    ).get(lt)
+    if manual_remaining is None:
+        return None
+
+    total = max(float(yearly_limit or 0.0), 0.0)
+    remaining = min(max(float(manual_remaining or 0.0), 0.0), total)
+    return max(total - remaining, 0.0)
+
+
+def get_manual_remaining_used_snapshot_by_type(
+    *, employee, leave_year_start: date
+) -> dict[str, float]:
+    raw = getattr(employee, "leave_limits_override", None)
+    if not isinstance(raw, dict):
+        return {}
+
+    by_year = raw.get(_MANUAL_REMAINING_USED_SNAPSHOT_BY_YEAR_KEY)
+    if not isinstance(by_year, dict):
+        return {}
+
+    key = leave_year_start.isoformat() if leave_year_start else None
+    if not key:
+        return {}
+
+    snapshot_map = by_year.get(key)
+    if not isinstance(snapshot_map, dict):
+        return {}
+
+    out: dict[str, float] = {}
+    for k, v in snapshot_map.items():
+        if not isinstance(k, str):
+            continue
+        lt = normalize_leave_type(k)
+        if not lt:
+            continue
+        try:
+            num = float(v)
+        except (TypeError, ValueError):
+            continue
+        if num < 0:
+            continue
+        out[lt] = float(_round_to_half_day(num))
+
+    return out
+
+
+def apply_manual_remaining_used_adjustment(
+    *,
+    employee,
+    leave_year_start: date,
+    leave_type: str,
+    yearly_limit: float,
+    current_used: float,
+) -> float:
+    baseline = get_manual_remaining_used_baseline(
+        employee=employee,
+        leave_year_start=leave_year_start,
+        leave_type=leave_type,
+        yearly_limit=yearly_limit,
+    )
+    if baseline is None:
+        return float(current_used or 0.0)
+
+    lt = normalize_leave_type(leave_type)
+    snapshot = get_manual_remaining_used_snapshot_by_type(
+        employee=employee, leave_year_start=leave_year_start
+    ).get(lt)
+    if snapshot is None:
+        return max(float(current_used or 0.0), float(baseline))
+
+    used_since_snapshot = max(float(current_used or 0.0) - float(snapshot), 0.0)
+    return float(baseline) + float(used_since_snapshot)
+
+
 def _is_probation_leave(*, employee, leave_start: date) -> bool:
     probation_end = getattr(employee, "probation_end_date", None)
     if not probation_end:
@@ -180,9 +276,18 @@ def compute_paid_unpaid_split(
         employee, on_date=start_date
     )
 
+    manual_remaining_baseline = get_manual_remaining_used_baseline(
+        employee=employee,
+        leave_year_start=leave_year_start,
+        leave_type=leave_type,
+        yearly_limit=limits[leave_type],
+    )
+
     vacation_carry = 0.0
-    if leave_type == "VACATION" and not has_leave_limit_override_for_employee(
-        employee, "VACATION"
+    if (
+        manual_remaining_baseline is None
+        and leave_type == "VACATION"
+        and not has_leave_limit_override_for_employee(employee, "VACATION")
     ):
         prev_day = leave_year_start - timedelta(days=1)
         prev_start, prev_end_excl = get_leave_year_range_for_employee(
@@ -210,11 +315,17 @@ def compute_paid_unpaid_split(
     if instance_id:
         approved_qs = approved_qs.exclude(id=instance_id)
 
-    used_days = sum(
+    approved_used_days = sum(
         overlapping_days(lr, leave_year_start, leave_year_end_excl)
         for lr in approved_qs
     )
-    used_days = float(used_days) + float(manual_used)
+    used_days = apply_manual_remaining_used_adjustment(
+        employee=employee,
+        leave_year_start=leave_year_start,
+        leave_type=leave_type,
+        yearly_limit=limits[leave_type],
+        current_used=float(approved_used_days) + float(manual_used),
+    )
     remaining = max(total_allowed - float(used_days), 0.0)
 
     paid_days = min(float(leave_days), float(remaining))
@@ -251,9 +362,18 @@ def compute_paid_unpaid_split_for_request(
     if _is_probation_leave(employee=employee, leave_start=req.start_date):
         return 0.0, leave_days
 
+    manual_remaining_baseline = get_manual_remaining_used_baseline(
+        employee=employee,
+        leave_year_start=leave_year_start,
+        leave_type=lt,
+        yearly_limit=limits[lt],
+    )
+
     vacation_carry = 0.0
-    if lt == "VACATION" and not has_leave_limit_override_for_employee(
-        employee, "VACATION"
+    if (
+        manual_remaining_baseline is None
+        and lt == "VACATION"
+        and not has_leave_limit_override_for_employee(employee, "VACATION")
     ):
         prev_day = leave_year_start - timedelta(days=1)
         prev_start, prev_end_excl = get_leave_year_range_for_employee(
@@ -265,7 +385,7 @@ def compute_paid_unpaid_split_for_request(
     manual_used = get_manual_used_by_type(
         employee=employee, leave_year_start=leave_year_start
     ).get(lt, 0.0)
-    remaining = max(float(total_allowed) - float(manual_used), 0.0)
+    actual_used_before = 0.0
 
     status_norm = (getattr(req, "status", "") or "").strip().upper()
 
@@ -297,17 +417,34 @@ def compute_paid_unpaid_split_for_request(
         if lr_days <= 0.0:
             continue
 
+        effective_used_before = apply_manual_remaining_used_adjustment(
+            employee=employee,
+            leave_year_start=leave_year_start,
+            leave_type=lt,
+            yearly_limit=limits[lt],
+            current_used=float(manual_used or 0.0) + float(actual_used_before),
+        )
+        remaining = max(float(total_allowed) - float(effective_used_before), 0.0)
         paid_portion = min(remaining, lr_days)
         unpaid_portion = max(lr_days - paid_portion, 0.0)
-        remaining = max(remaining - paid_portion, 0.0)
 
         if lr.id == req.id:
             paid_for_req = paid_portion
             unpaid_for_req = unpaid_portion
             break
 
+        actual_used_before += float(lr_days)
+
     if status_norm != "APPROVED":
         # Preview for a not-yet-approved request.
+        effective_used_before = apply_manual_remaining_used_adjustment(
+            employee=employee,
+            leave_year_start=leave_year_start,
+            leave_type=lt,
+            yearly_limit=limits[lt],
+            current_used=float(manual_used or 0.0) + float(actual_used_before),
+        )
+        remaining = max(float(total_allowed) - float(effective_used_before), 0.0)
         paid_for_req = min(remaining, leave_days)
         unpaid_for_req = max(leave_days - paid_for_req, 0.0)
 

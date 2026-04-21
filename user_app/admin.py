@@ -272,22 +272,55 @@ class EmployeeAdminForm(forms.ModelForm):
             if not isinstance(remaining_by_year, dict):
                 remaining_by_year = {}
             remaining_by_year = dict(remaining_by_year)
+            snapshot_by_year = merged.get("_manual_remaining_used_snapshot_by_year")
+            if not isinstance(snapshot_by_year, dict):
+                snapshot_by_year = {}
+            snapshot_by_year = dict(snapshot_by_year)
 
             key = year_start.isoformat()
-            year_map: dict[str, float] = {}
-            remaining_map: dict[str, float] = {}
+            existing_year_map = by_year.get(key)
+            year_map: dict[str, float] = (
+                dict(existing_year_map) if isinstance(existing_year_map, dict) else {}
+            )
+            existing_remaining_map = remaining_by_year.get(key)
+            remaining_map: dict[str, float] = (
+                dict(existing_remaining_map)
+                if isinstance(existing_remaining_map, dict)
+                else {}
+            )
+            existing_snapshot_map = snapshot_by_year.get(key)
+            snapshot_map: dict[str, float] = (
+                dict(existing_snapshot_map)
+                if isinstance(existing_snapshot_map, dict)
+                else {}
+            )
 
             for field_name, lt in self._MANUAL_FIELD_TO_TYPE.items():
+                if field_name not in self.changed_data:
+                    continue
                 v = self.cleaned_data.get(field_name)
                 if v is None:
+                    year_map.pop(lt, None)
                     continue
                 year_map[lt] = float(v)
 
             for field_name, lt in self._FIELD_TO_TYPE.items():
+                if field_name not in self.changed_data:
+                    continue
                 desired_remaining = self.cleaned_data.get(field_name)
                 if desired_remaining is None:
+                    remaining_map.pop(lt, None)
+                    snapshot_map.pop(lt, None)
                     continue
                 remaining_map[lt] = float(_round_to_half_day(desired_remaining))
+                approved_used = self._approved_paid_used_for_type(
+                    emp=emp, leave_type=lt, year_start=year_start
+                )
+                snapshot_map[lt] = float(
+                    _round_to_half_day(
+                        float(approved_used) + float(year_map.get(lt, 0.0) or 0.0)
+                    )
+                )
 
             if year_map:
                 by_year[key] = year_map
@@ -300,6 +333,11 @@ class EmployeeAdminForm(forms.ModelForm):
             else:
                 remaining_by_year.pop(key, None)
 
+            if snapshot_map:
+                snapshot_by_year[key] = snapshot_map
+            else:
+                snapshot_by_year.pop(key, None)
+
             if by_year:
                 merged["_manual_used_by_year"] = by_year
             else:
@@ -309,6 +347,11 @@ class EmployeeAdminForm(forms.ModelForm):
                 merged["_manual_remaining_by_year"] = remaining_by_year
             else:
                 merged.pop("_manual_remaining_by_year", None)
+
+            if snapshot_by_year:
+                merged["_manual_remaining_used_snapshot_by_year"] = snapshot_by_year
+            else:
+                merged.pop("_manual_remaining_used_snapshot_by_year", None)
 
         emp.leave_limits_override = merged
 

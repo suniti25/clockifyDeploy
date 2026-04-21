@@ -11,9 +11,11 @@ from form_app.helpers import (
     overlapping_days,
     display_is_paid,
     _norm_status_expr,
+    apply_manual_remaining_used_adjustment,
     compute_paid_unpaid_split_for_request,
     get_leave_selected_dates,
-    get_manual_remaining_by_type,
+    get_manual_remaining_used_baseline,
+    get_manual_remaining_used_snapshot_by_type,
     get_manual_used_by_type,
     fmt_leave_days,
 )
@@ -285,8 +287,20 @@ def _aggregate_approved_usage(
     total_allowed_by_type: dict[str, float] = {
         (lt or "").strip().upper(): float(limit) for lt, limit in limits.items()
     }
+    manual_remaining_baselines: dict[str, float] = {}
+    for lt, yearly_limit in total_allowed_by_type.items():
+        baseline = get_manual_remaining_used_baseline(
+            employee=emp,
+            leave_year_start=year_start,
+            leave_type=lt,
+            yearly_limit=yearly_limit,
+        )
+        if baseline is not None:
+            manual_remaining_baselines[lt] = float(baseline)
+
     if (
         "VACATION" in total_allowed_by_type
+        and "VACATION" not in manual_remaining_baselines
         and not has_leave_limit_override_for_employee(emp, "VACATION")
     ):
         total_allowed_by_type["VACATION"] = float(
@@ -294,20 +308,11 @@ def _aggregate_approved_usage(
         ) + float(carry)
 
     paid_used_by_type: dict[str, float] = {}
+    actual_used_by_type: dict[str, float] = {}
     probation_total = 0.0
     unpaid_total = 0.0
 
-    # Apply admin-entered manual usage as baseline used days.
     manual_used = get_manual_used_by_type(employee=emp, leave_year_start=year_start)
-    for lt, allowed_total in total_allowed_by_type.items():
-        mu = float(manual_used.get(lt, 0.0) or 0.0)
-        if mu <= 0.0:
-            continue
-        if mu > float(allowed_total):
-            paid_used_by_type[lt] = float(allowed_total)
-            unpaid_total += float(mu - float(allowed_total))
-        else:
-            paid_used_by_type[lt] = float(mu)
 
     joining_date = getattr(emp, "joining_date", None)
     probation_end_date = getattr(emp, "probation_end_date", None)
@@ -338,17 +343,24 @@ def _aggregate_approved_usage(
             unpaid_total += days
             continue
 
-        remaining = max(
-            float(total_allowed_by_type[lt]) - float(paid_used_by_type.get(lt, 0.0)),
-            0.0,
-        )
-        paid_portion = min(remaining, days)
-        unpaid_portion = max(days - paid_portion, 0.0)
+        actual_used_by_type[lt] = float(actual_used_by_type.get(lt, 0.0) + days)
 
-        if paid_portion > 0:
-            paid_used_by_type[lt] = float(paid_used_by_type.get(lt, 0.0) + paid_portion)
-        if unpaid_portion > 0:
-            unpaid_total += unpaid_portion
+    for lt, allowed_total in total_allowed_by_type.items():
+        effective_used = apply_manual_remaining_used_adjustment(
+            employee=emp,
+            leave_year_start=year_start,
+            leave_type=lt,
+            yearly_limit=allowed_total,
+            current_used=float(actual_used_by_type.get(lt, 0.0))
+            + float(manual_used.get(lt, 0.0) or 0.0),
+        )
+        paid_used = min(float(effective_used), float(allowed_total))
+        unpaid_overflow = max(float(effective_used) - float(allowed_total), 0.0)
+
+        if paid_used > 0:
+            paid_used_by_type[lt] = float(paid_used)
+        if unpaid_overflow > 0:
+            unpaid_total += float(unpaid_overflow)
 
     return (
         paid_used_by_type,
@@ -412,22 +424,28 @@ def remaining_leaves(
     paid_used_by_type, _probation_total, _unpaid_total, carry, _ys, _ye = (
         _aggregate_approved_usage(emp, leaves=leaves)
     )
-    manual_remaining = get_manual_remaining_by_type(employee=emp, leave_year_start=_ys)
-
     remaining: dict[str, float] = {}
     limits = get_leave_limits_for_employee(emp)
     vacation_has_override = has_leave_limit_override_for_employee(emp, "VACATION")
     for leave_type, yearly_limit in limits.items():
         leave_type_u = (leave_type or "").strip().upper()
         total_allowed = float(yearly_limit)
+        manual_baseline = get_manual_remaining_used_baseline(
+            employee=emp,
+            leave_year_start=_ys,
+            leave_type=leave_type_u,
+            yearly_limit=yearly_limit,
+        )
 
-        if leave_type_u == "VACATION" and not vacation_has_override:
+        if (
+            manual_baseline is None
+            and leave_type_u == "VACATION"
+            and not vacation_has_override
+        ):
             total_allowed += float(carry)
 
         used = float(paid_used_by_type.get(leave_type_u, 0.0))
         value = float(round(max(total_allowed - used, 0.0), 1))
-        if leave_type_u in manual_remaining:
-            value = float(manual_remaining.get(leave_type_u, 0.0) or 0.0)
         remaining[leave_type_u] = fmt_leave_days(value)
 
     return remaining
@@ -447,20 +465,23 @@ def remaining_balance_for_type(emp, leave_type: str) -> Optional[float]:
     year_start, year_end_excl = get_leave_year_window(emp, today=today)
 
     allowed = float(limits[leave_type_u])
-    if leave_type_u == "VACATION" and not has_leave_limit_override_for_employee(
-        emp, "VACATION"
+    manual_baseline = get_manual_remaining_used_baseline(
+        employee=emp,
+        leave_year_start=year_start,
+        leave_type=leave_type_u,
+        yearly_limit=limits[leave_type_u],
+    )
+    if (
+        manual_baseline is None
+        and leave_type_u == "VACATION"
+        and not has_leave_limit_override_for_employee(emp, "VACATION")
     ):
         allowed += vacation_carry_forward(emp, year_start)
     manual_used = get_manual_used_by_type(
         employee=emp, leave_year_start=year_start
     ).get(leave_type_u, 0.0)
-    manual_remaining = get_manual_remaining_by_type(
-        employee=emp, leave_year_start=year_start
-    ).get(leave_type_u, None)
-    if manual_remaining is not None:
-        return float(round(float(manual_remaining), 1))
 
-    used = float(manual_used)
+    actual_used = 0.0
     qs = LeaveRequest.objects.filter(
         employee=emp,
         is_paid=True,
@@ -470,7 +491,15 @@ def remaining_balance_for_type(emp, leave_type: str) -> Optional[float]:
     for lr in qs:
         if (lr.status or "").strip().upper() != LeaveRequest.STATUS_APPROVED:
             continue
-        used += float(overlapping_days(lr, year_start, year_end_excl))
+        actual_used += float(overlapping_days(lr, year_start, year_end_excl))
+
+    used = apply_manual_remaining_used_adjustment(
+        employee=emp,
+        leave_year_start=year_start,
+        leave_type=leave_type_u,
+        yearly_limit=limits[leave_type_u],
+        current_used=float(actual_used) + float(manual_used),
+    )
 
     return float(round(max(allowed - used, 0.0), 1))
 
@@ -499,10 +528,41 @@ def serialize_request_for_frontend(lr: LeaveRequest) -> Dict[str, Any]:
             paid_days, unpaid_days = 0.0, 0.0
 
     if emp and lr.is_paid and lr.leave_type:
-        current_balance = remaining_balance_for_type(emp, lr.leave_type)
-        if current_balance is not None:
+        remaining_now = remaining_balance_for_type(emp, lr.leave_type)
+        if remaining_now is not None:
+            status_norm = (lr.status or "").strip().upper()
+            leave_type_u = (lr.leave_type or "").strip().upper()
+            year_start, _year_end_excl = get_leave_year_window(emp)
+            manual_baseline = get_manual_remaining_used_baseline(
+                employee=emp,
+                leave_year_start=year_start,
+                leave_type=leave_type_u,
+                yearly_limit=get_leave_limits_for_employee(emp).get(leave_type_u, 0.0),
+            )
+            has_manual_snapshot = (
+                leave_type_u
+                in get_manual_remaining_used_snapshot_by_type(
+                    employee=emp, leave_year_start=year_start
+                )
+            )
+
+            if status_norm == LeaveRequest.STATUS_APPROVED and (
+                manual_baseline is None or has_manual_snapshot
+            ):
+                after_approval = float(remaining_now)
+                current_balance = round(
+                    float(remaining_now) + float(paid_days or 0.0), 1
+                )
+            else:
+                current_balance = float(remaining_now)
+                after_approval = round(
+                    max(float(remaining_now) - float(paid_days or 0.0), 0.0),
+                    1,
+                )
+
+        if current_balance is not None and after_approval is None:
             after_approval = round(
-                max(float(current_balance) - float(req_days), 0.0), 1
+                max(float(current_balance) - float(paid_days or req_days), 0.0), 1
             )
 
     selected_dates, is_selective = get_leave_selected_dates(lr)
