@@ -14,6 +14,7 @@ from form_app.helpers import (
     apply_manual_remaining_used_adjustment,
     compute_paid_unpaid_split_for_request,
     get_leave_selected_dates,
+    get_manual_remaining_by_type,
     get_manual_remaining_used_baseline,
     get_manual_remaining_used_snapshot_by_type,
     get_manual_used_by_type,
@@ -426,6 +427,7 @@ def remaining_leaves(
     )
     remaining: dict[str, float] = {}
     limits = get_leave_limits_for_employee(emp)
+    manual_remaining = get_manual_remaining_by_type(employee=emp, leave_year_start=_ys)
     vacation_has_override = has_leave_limit_override_for_employee(emp, "VACATION")
     for leave_type, yearly_limit in limits.items():
         leave_type_u = (leave_type or "").strip().upper()
@@ -445,7 +447,10 @@ def remaining_leaves(
             total_allowed += float(carry)
 
         used = float(paid_used_by_type.get(leave_type_u, 0.0))
-        value = float(round(max(total_allowed - used, 0.0), 1))
+        if leave_type_u in manual_remaining:
+            value = float(manual_remaining[leave_type_u])
+        else:
+            value = float(round(max(total_allowed - used, 0.0), 1))
         remaining[leave_type_u] = fmt_leave_days(value)
 
     return remaining
@@ -463,6 +468,12 @@ def remaining_balance_for_type(emp, leave_type: str) -> Optional[float]:
 
     today = timezone.localdate()
     year_start, year_end_excl = get_leave_year_window(emp, today=today)
+
+    manual_remaining = get_manual_remaining_by_type(
+        employee=emp, leave_year_start=year_start
+    ).get(leave_type_u)
+    if manual_remaining is not None:
+        return float(round(float(manual_remaining), 1))
 
     allowed = float(limits[leave_type_u])
     manual_baseline = get_manual_remaining_used_baseline(
