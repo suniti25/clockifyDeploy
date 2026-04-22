@@ -868,13 +868,25 @@ def carry_forward_only(employee, prev_start: date, prev_end_exclusive: date) -> 
         employee=employee,
         leave_type="VACATION",
         status="APPROVED",
-        is_paid=True,
         start_date__lt=prev_end_exclusive,
         end_date__gte=prev_start,
     )
+    probation_end = getattr(employee, "probation_end_date", None)
+    if probation_end:
+        qs = qs.filter(start_date__gt=probation_end)
 
-    used = sum(overlapping_days(lr, prev_start, prev_end_exclusive) for lr in qs)
-    remaining = max(vacation_limit - float(used), 0.0)
+    actual_used = sum(overlapping_days(lr, prev_start, prev_end_exclusive) for lr in qs)
+    manual_used = get_manual_used_by_type(
+        employee=employee, leave_year_start=prev_start
+    ).get("VACATION", 0.0)
+    effective_used = apply_manual_remaining_used_adjustment(
+        employee=employee,
+        leave_year_start=prev_start,
+        leave_type="VACATION",
+        yearly_limit=vacation_limit,
+        current_used=float(actual_used) + float(manual_used or 0.0),
+    )
+    remaining = max(vacation_limit - float(effective_used), 0.0)
 
     carry_pct = max(0, min(get_carryover_percentage(), 50))
     carry_raw = remaining * (float(carry_pct) / 100.0)

@@ -57,27 +57,39 @@ def carry_forward_only(employee, prev_start: date, prev_end_exclusive: date) -> 
     if joining_date and joining_date > prev_start:
         return 0.0
 
-    # Carry-forward should be based on the standard yearly policy, not
-    # employee-specific top-ups or one-off admin corrections.
+    # Carry-forward uses the standard yearly policy, but respects an admin
+    # remaining-balance correction for that previous leave year.
     yearly_vacation = float(get_leave_limits().get("VACATION", 0.0))
 
-    prev_used = 0.0
+    actual_used = 0.0
     qs = LeaveRequest.objects.filter(
         employee=employee,
         leave_type="VACATION",
         status="APPROVED",
-        is_paid=True,
         start_date__lt=prev_end_exclusive,
         end_date__gte=prev_start,
     )
+    probation_end = getattr(employee, "probation_end_date", None)
+    if probation_end:
+        qs = qs.filter(start_date__gt=probation_end)
 
     for lr in qs:
         # Only count the portion of the leave that overlaps the previous leave year.
         # This avoids cross-renewal leaves (e.g. Mar 12–13 when renewal is Mar 13)
         # incorrectly reducing the previous year's carry-forward.
-        prev_used += float(form_overlapping_days(lr, prev_start, prev_end_exclusive))
+        actual_used += float(form_overlapping_days(lr, prev_start, prev_end_exclusive))
 
-    prev_remaining = max(yearly_vacation - prev_used, 0.0)
+    manual_used = get_manual_used_by_type(
+        employee=employee, leave_year_start=prev_start
+    ).get("VACATION", 0.0)
+    effective_used = apply_manual_remaining_used_adjustment(
+        employee=employee,
+        leave_year_start=prev_start,
+        leave_type="VACATION",
+        yearly_limit=yearly_vacation,
+        current_used=float(actual_used) + float(manual_used or 0.0),
+    )
+    prev_remaining = max(yearly_vacation - float(effective_used), 0.0)
     carry_pct = max(0, min(get_carryover_percentage(), 50))
     carry_raw = prev_remaining * (float(carry_pct) / 100.0)
 

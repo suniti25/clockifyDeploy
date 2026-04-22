@@ -156,9 +156,7 @@ class EmployeeAdminForm(forms.ModelForm):
         )
         return float(carry_forward_only(emp, prev_start, prev_end_excl))
 
-    def _approved_paid_used_for_type(
-        self, *, emp: Employee, leave_type: str, year_start
-    ):
+    def _approved_used_for_type(self, *, emp: Employee, leave_type: str, year_start):
         _year_start, year_end_excl = get_leave_year_range_for_employee(
             emp, on_date=year_start
         )
@@ -166,10 +164,12 @@ class EmployeeAdminForm(forms.ModelForm):
             employee=emp,
             leave_type__iexact=leave_type,
             status=LeaveRequest.STATUS_APPROVED,
-            is_paid=True,
             start_date__lt=year_end_excl,
             end_date__gte=year_start,
         )
+        probation_end = getattr(emp, "probation_end_date", None)
+        if probation_end:
+            qs = qs.filter(start_date__gt=probation_end)
         return float(sum(overlapping_days(lr, year_start, year_end_excl) for lr in qs))
 
     def _compute_total_allowed_for_type(
@@ -195,7 +195,7 @@ class EmployeeAdminForm(forms.ModelForm):
         total_allowed = self._compute_total_allowed_for_type(
             emp=emp, leave_type=leave_type, year_start=year_start
         )
-        approved_used = self._approved_paid_used_for_type(
+        approved_used = self._approved_used_for_type(
             emp=emp, leave_type=leave_type, year_start=year_start
         )
         current_manual = float(manual_used.get(leave_type, 0.0) or 0.0)
@@ -313,7 +313,7 @@ class EmployeeAdminForm(forms.ModelForm):
                     snapshot_map.pop(lt, None)
                     continue
                 remaining_map[lt] = float(_round_to_half_day(desired_remaining))
-                approved_used = self._approved_paid_used_for_type(
+                approved_used = self._approved_used_for_type(
                     emp=emp, leave_type=lt, year_start=year_start
                 )
                 snapshot_map[lt] = float(

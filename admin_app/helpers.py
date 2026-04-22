@@ -484,13 +484,16 @@ def remaining_balance_for_type(emp, leave_type: str) -> Optional[float]:
     actual_used = 0.0
     qs = LeaveRequest.objects.filter(
         employee=emp,
-        is_paid=True,
         leave_type__iexact=leave_type_u,
+        status=LeaveRequest.STATUS_APPROVED,
+        start_date__lt=year_end_excl,
+        end_date__gte=year_start,
     ).order_by("-applied_at", "-id")
+    probation_end = getattr(emp, "probation_end_date", None)
+    if probation_end:
+        qs = qs.filter(start_date__gt=probation_end)
 
     for lr in qs:
-        if (lr.status or "").strip().upper() != LeaveRequest.STATUS_APPROVED:
-            continue
         actual_used += float(overlapping_days(lr, year_start, year_end_excl))
 
     used = apply_manual_remaining_used_adjustment(
