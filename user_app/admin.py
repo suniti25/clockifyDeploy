@@ -8,7 +8,9 @@ from form_app.policies import get_probation_days
 from form_app.policies import get_leave_year_range_for_employee
 
 from form_app.helpers import (
+    apply_manual_remaining_used_adjustment,
     get_manual_remaining_by_type,
+    get_manual_remaining_used_baseline,
     get_manual_used_by_type,
     overlapping_days,
 )
@@ -113,14 +115,12 @@ class EmployeeAdminForm(forms.ModelForm):
                 continue
 
         for field_name, lt in self._FIELD_TO_TYPE.items():
-            remaining = manual_remaining.get(lt)
-            if remaining is None:
-                remaining = self._compute_remaining_for_type(
-                    emp=emp,
-                    leave_type=lt,
-                    year_start=year_start,
-                    manual_used=manual_used,
-                )
+            remaining = self._compute_remaining_for_type(
+                emp=emp,
+                leave_type=lt,
+                year_start=year_start,
+                manual_used=manual_used,
+            )
             self.fields[field_name].initial = remaining
 
         # Make intent clear in the UI.
@@ -177,8 +177,16 @@ class EmployeeAdminForm(forms.ModelForm):
     ):
         limits = get_leave_limits_for_employee(emp)
         total_allowed = float(limits.get(leave_type, 0.0))
-        if leave_type == "VACATION" and not has_leave_limit_override_for_employee(
-            emp, "VACATION"
+        manual_baseline = get_manual_remaining_used_baseline(
+            employee=emp,
+            leave_year_start=year_start,
+            leave_type=leave_type,
+            yearly_limit=total_allowed,
+        )
+        if (
+            manual_baseline is None
+            and leave_type == "VACATION"
+            and not has_leave_limit_override_for_employee(emp, "VACATION")
         ):
             total_allowed += float(self._carry_forward_for_year(emp, year_start))
         return float(total_allowed)
@@ -195,13 +203,20 @@ class EmployeeAdminForm(forms.ModelForm):
         total_allowed = self._compute_total_allowed_for_type(
             emp=emp, leave_type=leave_type, year_start=year_start
         )
+        limits = get_leave_limits_for_employee(emp)
+        yearly_limit = float(limits.get(leave_type, 0.0))
         approved_used = self._approved_used_for_type(
             emp=emp, leave_type=leave_type, year_start=year_start
         )
         current_manual = float(manual_used.get(leave_type, 0.0) or 0.0)
-        return _round_to_half_day(
-            max(total_allowed - approved_used - current_manual, 0.0)
+        used = apply_manual_remaining_used_adjustment(
+            employee=emp,
+            leave_year_start=year_start,
+            leave_type=leave_type,
+            yearly_limit=yearly_limit,
+            current_used=float(approved_used) + current_manual,
         )
+        return _round_to_half_day(max(float(total_allowed) - float(used), 0.0))
 
     def clean(self):
         cleaned = super().clean()

@@ -145,8 +145,9 @@ def get_manual_remaining_used_baseline(
 ) -> Optional[float]:
     """Return the used-days baseline implied by an admin remaining override.
 
-    Django admin's manual remaining balance is the source of truth for the
-    current leave year, so effective used is derived as total minus remaining.
+    Django admin's manual remaining balance sets the source-of-truth balance at
+    the time it is saved. The saved used-days snapshot lets future approvals
+    continue to deduct from that target instead of freezing the balance forever.
     """
 
     lt = normalize_leave_type(leave_type)
@@ -218,7 +219,14 @@ def apply_manual_remaining_used_adjustment(
     if baseline is None:
         return float(current_used or 0.0)
 
-    return float(baseline)
+    lt = normalize_leave_type(leave_type)
+    snapshot = get_manual_remaining_used_snapshot_by_type(
+        employee=employee, leave_year_start=leave_year_start
+    ).get(lt)
+    if snapshot is None:
+        return float(baseline)
+
+    return max(float(baseline) + float(current_used or 0.0) - float(snapshot), 0.0)
 
 
 def _is_probation_leave(*, employee, leave_start: date) -> bool:

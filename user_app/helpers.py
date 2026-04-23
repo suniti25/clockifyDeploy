@@ -664,10 +664,10 @@ def _leave_balance_list(
 
         if leave_type in manual_remaining:
             # Django admin's remaining-balance override is the displayed source
-            # of truth for this leave year.
+            # of truth at save time; subsequent approved leave still deducts.
             display_total = max(float(yearly_limit), 0.0)
             display_used = min(max(float(paid_used), 0.0), display_total)
-            remaining = max(float(manual_remaining[leave_type]), 0.0)
+            remaining = max(display_total - display_used, 0.0)
             if leave_type == "VACATION":
                 display_carry = 0.0
 
