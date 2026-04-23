@@ -7,8 +7,10 @@ from django.utils import timezone
 from admin_app.serializers import AdminUserUpdateSerializer
 from form_app.helpers import apply_manual_remaining_used_adjustment
 from form_app.policies import get_leave_limits_for_employee
+from form_app.policies import get_leave_year_range_for_employee
 from form_app.models import LeaveRequest
 from user_app.admin import EmployeeAdminForm
+from user_app.helpers import _build_leave_year_context
 from user_app.models import Employee
 
 
@@ -191,3 +193,33 @@ class AdminUserUpdateLeaveOverrideTests(TestCase):
 
         employee.refresh_from_db()
         self.assertEqual(employee.leave_limits_override.get("VACATION"), 28.0)
+
+
+class EmployeeDashboardLeaveYearTests(TestCase):
+    def test_dashboard_stays_on_current_leave_year_with_future_approved_leave(self):
+        user = User.objects.create_user(username="future-leave-user")
+        employee = Employee.objects.create(
+            user=user,
+            joining_date=date(2024, 1, 1),
+            probation_end_date=date(2024, 3, 31),
+            leave_renewal_date_override=date(2000, 5, 18),
+        )
+        current_start, current_end_excl = get_leave_year_range_for_employee(
+            employee, on_date=timezone.localdate()
+        )
+        LeaveRequest.objects.create(
+            employee=employee,
+            leave_type="VACATION",
+            start_date=current_end_excl,
+            end_date=current_end_excl,
+            session="FULL",
+            start_session="FULL",
+            end_session="FULL",
+            status=LeaveRequest.STATUS_APPROVED,
+            is_paid=True,
+        )
+
+        ctx = _build_leave_year_context(employee)
+
+        self.assertEqual(ctx.leave_year_start, current_start)
+        self.assertEqual(ctx.leave_year_end_excl, current_end_excl)

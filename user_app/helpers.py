@@ -286,23 +286,6 @@ def _build_leave_year_context(employee) -> LeaveYearContext:
     today = timezone.localdate()
 
     leave_year_start, leave_year_end_excl = get_leave_year_range(employee, today)
-    # If the user's next approved leave starts in a *different* leave year than
-    # the one containing today, compute balances for that relevant leave year so
-    # the dashboard reflects the approved deduction the user is about to take.
-    next_approved_start = (
-        LeaveRequest.objects.filter(
-            employee=employee,
-            status="APPROVED",
-            start_date__gte=today,
-        )
-        .order_by("start_date", "id")
-        .values_list("start_date", flat=True)
-        .first()
-    )
-    if next_approved_start and next_approved_start >= leave_year_end_excl:
-        leave_year_start, leave_year_end_excl = get_leave_year_range(
-            employee, next_approved_start
-        )
     leave_year_end_incl = leave_year_end_excl - timedelta(days=1)
 
     is_on_probation = employee.is_on_probation(on_date=today)
