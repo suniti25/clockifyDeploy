@@ -15,7 +15,6 @@ from form_app.helpers import (
     compute_paid_unpaid_split_for_request,
     get_leave_selected_dates,
     get_manual_remaining_used_baseline,
-    get_manual_remaining_used_snapshot_by_type,
     get_manual_used_by_type,
     fmt_leave_days,
 )
@@ -534,24 +533,7 @@ def serialize_request_for_frontend(lr: LeaveRequest) -> Dict[str, Any]:
         remaining_now = remaining_balance_for_type(emp, lr.leave_type)
         if remaining_now is not None:
             status_norm = (lr.status or "").strip().upper()
-            leave_type_u = (lr.leave_type or "").strip().upper()
-            year_start, _year_end_excl = get_leave_year_window(emp)
-            manual_baseline = get_manual_remaining_used_baseline(
-                employee=emp,
-                leave_year_start=year_start,
-                leave_type=leave_type_u,
-                yearly_limit=get_leave_limits_for_employee(emp).get(leave_type_u, 0.0),
-            )
-            has_manual_snapshot = (
-                leave_type_u
-                in get_manual_remaining_used_snapshot_by_type(
-                    employee=emp, leave_year_start=year_start
-                )
-            )
-
-            if status_norm == LeaveRequest.STATUS_APPROVED and (
-                manual_baseline is None or has_manual_snapshot
-            ):
+            if status_norm == LeaveRequest.STATUS_APPROVED:
                 after_approval = float(remaining_now)
                 current_balance = round(
                     float(remaining_now) + float(paid_days or 0.0), 1

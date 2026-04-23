@@ -224,7 +224,7 @@ def apply_manual_remaining_used_adjustment(
         employee=employee, leave_year_start=leave_year_start
     ).get(lt)
     if snapshot is None:
-        return float(baseline)
+        snapshot = float(baseline)
 
     return max(float(baseline) + float(current_used or 0.0) - float(snapshot), 0.0)
 

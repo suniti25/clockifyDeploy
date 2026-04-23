@@ -15,17 +15,27 @@ class ManualRemainingBalanceTests(TestCase):
         self.user = User.objects.create_user(username="balance-user")
 
     def _employee_with_manual_remaining(
-        self, *, remaining: float, snapshot_used: float | None
+        self,
+        *,
+        leave_type: str = "VACATION",
+        yearly_limit: float = 16.0,
+        remaining: float,
+        snapshot_used: float | None,
+        manual_used: float | None = None,
     ) -> Employee:
         overrides = {
-            "VACATION": 16.0,
+            leave_type: yearly_limit,
             "_manual_remaining_by_year": {
-                self.year_start.isoformat(): {"VACATION": remaining}
+                self.year_start.isoformat(): {leave_type: remaining}
             },
         }
         if snapshot_used is not None:
             overrides["_manual_remaining_used_snapshot_by_year"] = {
-                self.year_start.isoformat(): {"VACATION": snapshot_used}
+                self.year_start.isoformat(): {leave_type: snapshot_used}
+            }
+        if manual_used is not None:
+            overrides["_manual_used_by_year"] = {
+                self.year_start.isoformat(): {leave_type: manual_used}
             }
 
         return Employee.objects.create(
@@ -77,7 +87,7 @@ class ManualRemainingBalanceTests(TestCase):
 
         self.assertEqual(remaining, 14.0)
 
-    def test_manual_remaining_without_snapshot_keeps_legacy_behavior(self):
+    def test_manual_remaining_without_snapshot_uses_implied_snapshot(self):
         employee = self._employee_with_manual_remaining(
             remaining=16.0, snapshot_used=None
         )
@@ -90,4 +100,34 @@ class ManualRemainingBalanceTests(TestCase):
             current_used=2.0,
         )
 
-        self.assertEqual(used, 0.0)
+        self.assertEqual(used, 2.0)
+
+    def test_legacy_sick_remaining_deducts_after_approval(self):
+        employee = self._employee_with_manual_remaining(
+            leave_type="SICK",
+            yearly_limit=12.0,
+            remaining=8.5,
+            snapshot_used=None,
+            manual_used=3.5,
+        )
+        LeaveRequest.objects.create(
+            employee=employee,
+            leave_type="SICK",
+            start_date=date(2026, 4, 24),
+            end_date=date(2026, 4, 24),
+            session="FULL",
+            start_session="FULL",
+            end_session="FULL",
+            status=LeaveRequest.STATUS_APPROVED,
+            is_paid=True,
+        )
+
+        form = EmployeeAdminForm()
+        remaining = form._compute_remaining_for_type(
+            emp=employee,
+            leave_type="SICK",
+            year_start=self.year_start,
+            manual_used={"SICK": 3.5},
+        )
+
+        self.assertEqual(remaining, 7.5)
