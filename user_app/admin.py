@@ -2,6 +2,7 @@ from datetime import timedelta
 
 from django.utils import timezone
 from form_app.policies import compute_probation_end_date
+from form_app.policies import get_leave_limits
 from form_app.policies import get_leave_limits_for_employee
 from form_app.policies import has_leave_limit_override_for_employee
 from form_app.policies import get_probation_days
@@ -264,6 +265,7 @@ class EmployeeAdminForm(forms.ModelForm):
         if not isinstance(existing, dict):
             existing = {}
         merged = dict(existing)
+        policy_limits = get_leave_limits()
 
         for field_name, lt in self._ENTITLEMENT_FIELD_TO_TYPE.items():
             v = self.cleaned_data.get(field_name)
@@ -327,7 +329,8 @@ class EmployeeAdminForm(forms.ModelForm):
                     remaining_map.pop(lt, None)
                     snapshot_map.pop(lt, None)
                     continue
-                remaining_map[lt] = float(_round_to_half_day(desired_remaining))
+                target_remaining = float(_round_to_half_day(desired_remaining))
+                remaining_map[lt] = target_remaining
                 approved_used = self._approved_used_for_type(
                     emp=emp, leave_type=lt, year_start=year_start
                 )
@@ -336,6 +339,14 @@ class EmployeeAdminForm(forms.ModelForm):
                         float(approved_used) + float(year_map.get(lt, 0.0) or 0.0)
                     )
                 )
+                try:
+                    current_limit = float(
+                        merged.get(lt, policy_limits.get(lt, 0.0)) or 0.0
+                    )
+                except (TypeError, ValueError):
+                    current_limit = float(policy_limits.get(lt, 0.0) or 0.0)
+                if target_remaining > current_limit:
+                    merged[lt] = target_remaining
 
             if year_map:
                 by_year[key] = year_map

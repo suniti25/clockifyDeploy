@@ -2,8 +2,11 @@ from datetime import date
 
 from django.contrib.auth.models import User
 from django.test import TestCase
+from django.utils import timezone
 
+from admin_app.serializers import AdminUserUpdateSerializer
 from form_app.helpers import apply_manual_remaining_used_adjustment
+from form_app.policies import get_leave_limits_for_employee
 from form_app.models import LeaveRequest
 from user_app.admin import EmployeeAdminForm
 from user_app.models import Employee
@@ -131,3 +134,60 @@ class ManualRemainingBalanceTests(TestCase):
         )
 
         self.assertEqual(remaining, 7.5)
+
+    def test_admin_remaining_above_entitlement_raises_effective_limit(self):
+        today = timezone.localdate()
+        anchor_day = min(today.day, 28)
+        renewal_anchor = date(2000, today.month, anchor_day)
+        employee = Employee.objects.create(
+            user=self.user,
+            joining_date=date(2024, 1, 1),
+            probation_end_date=date(2024, 3, 31),
+            leave_renewal_date_override=renewal_anchor,
+        )
+
+        initial_form = EmployeeAdminForm(instance=employee)
+        data = {}
+        for name, field in initial_form.fields.items():
+            value = initial_form.initial.get(name, field.initial)
+            if name == "user":
+                value = employee.user_id
+            elif value is None:
+                value = ""
+            elif hasattr(value, "isoformat"):
+                value = value.isoformat()
+            data[name] = value
+        data["remaining_vacation"] = "28"
+
+        form = EmployeeAdminForm(data=data, instance=employee)
+        self.assertTrue(form.is_valid(), form.errors.as_data())
+        form.save()
+
+        employee.refresh_from_db()
+        self.assertEqual(
+            get_leave_limits_for_employee(employee).get("VACATION"),
+            28.0,
+        )
+
+
+class AdminUserUpdateLeaveOverrideTests(TestCase):
+    def test_camel_case_leave_limit_override_updates_employee(self):
+        user = User.objects.create_user(username="camel-user")
+        employee = Employee.objects.create(
+            user=user,
+            joining_date=date(2024, 1, 1),
+            probation_end_date=date(2024, 3, 31),
+        )
+
+        serializer = AdminUserUpdateSerializer(
+            data={
+                "user_id": user.id,
+                "leaveLimitsOverride": {"VACATION": 28},
+                "applyLeaveLimitsOverride": True,
+            }
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        serializer.update_user()
+
+        employee.refresh_from_db()
+        self.assertEqual(employee.leave_limits_override.get("VACATION"), 28.0)

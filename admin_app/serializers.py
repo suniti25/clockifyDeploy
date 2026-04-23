@@ -24,7 +24,6 @@ from .helpers import (
     used_leaves_by_type,
     remaining_leaves,
     total_leaves,
-    vacation_carry_forward,
 )
 
 
@@ -188,6 +187,10 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
     apply_leave_limits_override = serializers.BooleanField(
         required=False, default=False, write_only=True
     )
+    # Compatibility for frontends that send camelCase.
+    applyLeaveLimitsOverride = serializers.BooleanField(
+        required=False, default=False, write_only=True
+    )
 
     # Optional per-employee manual used leave adjustments for the current leave year,
     # e.g. {"VACATION": 5, "SICK": 1.5}. Stored under a reserved key in
@@ -286,10 +289,18 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
         if "leave_limits_override" not in data and "leaveLimitsOverride" in data:
             data["leave_limits_override"] = data.get("leaveLimitsOverride")
 
+        initial_payload = getattr(self, "initial_data", {}) or {}
+        if (
+            isinstance(initial_payload, dict)
+            and "apply_leave_limits_override" not in initial_payload
+            and "applyLeaveLimitsOverride" in initial_payload
+        ):
+            data["apply_leave_limits_override"] = data.get("applyLeaveLimitsOverride")
+        data.pop("applyLeaveLimitsOverride", None)
+
         # Normalize renewal override (camelCase) only when it was explicitly sent
         # in the request payload. This avoids accidental overwrite from serializer
         # defaults when admin updates unrelated fields like leave limits.
-        initial_payload = getattr(self, "initial_data", {}) or {}
         if (
             isinstance(initial_payload, dict)
             and "leave_renewal_date_override" not in initial_payload
@@ -518,14 +529,6 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
                         current_used = used_leaves_by_type(emp)
                     except Exception:
                         current_used = {}
-                    try:
-                        today = timezone.localdate()
-                        year_start, _year_end_excl = get_leave_year_range_for_employee(
-                            emp, on_date=today
-                        )
-                        vacation_carry = float(vacation_carry_forward(emp, year_start))
-                    except Exception:
-                        vacation_carry = 0.0
 
                     def _eq(a, b) -> bool:
                         try:
@@ -545,8 +548,6 @@ class AdminEmployeeUpdateSerializer(serializers.Serializer):
                             for leave_type, desired_remaining in overrides.items():
                                 used = float(current_used.get(leave_type, 0.0) or 0.0)
                                 yearly_limit = float(desired_remaining) + used
-                                if leave_type == "VACATION":
-                                    yearly_limit -= float(vacation_carry)
                                 converted[leave_type] = max(float(yearly_limit), 0.0)
                             overrides = converted
 
@@ -903,8 +904,16 @@ class AdminUserUpdateSerializer(serializers.Serializer):
         required=False, allow_blank=True, allow_null=True
     )
     leave_limits_override = serializers.JSONField(required=False, allow_null=True)
+    # Compatibility for frontends that send camelCase.
+    leaveLimitsOverride = serializers.JSONField(
+        required=False, allow_null=True, write_only=True
+    )
     apply_leave_limits_override = serializers.BooleanField(
         required=False, default=False
+    )
+    # Compatibility for frontends that send camelCase.
+    applyLeaveLimitsOverride = serializers.BooleanField(
+        required=False, default=False, write_only=True
     )
 
     def validate(self, data: dict[str, Any]):
@@ -966,6 +975,15 @@ class AdminUserUpdateSerializer(serializers.Serializer):
 
         if "leave_limits_override" not in data and "leaveLimitsOverride" in data:
             data["leave_limits_override"] = data.get("leaveLimitsOverride")
+
+        initial_payload = getattr(self, "initial_data", {}) or {}
+        if (
+            isinstance(initial_payload, dict)
+            and "apply_leave_limits_override" not in initial_payload
+            and "applyLeaveLimitsOverride" in initial_payload
+        ):
+            data["apply_leave_limits_override"] = data.get("applyLeaveLimitsOverride")
+        data.pop("applyLeaveLimitsOverride", None)
 
         if "leave_limits_override" in data:
             overrides = data.get("leave_limits_override")
@@ -1119,16 +1137,6 @@ class AdminUserUpdateSerializer(serializers.Serializer):
                             current_used = used_leaves_by_type(emp)
                         except Exception:
                             current_used = {}
-                        try:
-                            today = timezone.localdate()
-                            year_start, _year_end_excl = (
-                                get_leave_year_range_for_employee(emp, on_date=today)
-                            )
-                            vacation_carry = float(
-                                vacation_carry_forward(emp, year_start)
-                            )
-                        except Exception:
-                            vacation_carry = 0.0
 
                         def _eq(a, b) -> bool:
                             try:
@@ -1147,8 +1155,6 @@ class AdminUserUpdateSerializer(serializers.Serializer):
                             for leave_type, desired_remaining in overrides.items():
                                 used = float(current_used.get(leave_type, 0.0) or 0.0)
                                 yearly_limit = float(desired_remaining) + used
-                                if leave_type == "VACATION":
-                                    yearly_limit -= float(vacation_carry)
                                 converted[leave_type] = max(float(yearly_limit), 0.0)
                             overrides = converted
 
