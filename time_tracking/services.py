@@ -3,8 +3,9 @@ from __future__ import annotations
 from django.contrib.auth.models import User
 from django.db import transaction
 from django.utils import timezone
+from user_app.models import Project
 
-from .models import TimeEntry, TimeProject
+from .models import TimeEntry
 
 UNSET = object()
 
@@ -56,7 +57,7 @@ def update_entry(
     *,
     user: User,
     entry: TimeEntry,
-    project: TimeProject | None | object = UNSET,
+    project: Project | None | object = UNSET,
     description: str | None | object = UNSET,
     started_at=UNSET,
     ended_at=UNSET,
@@ -65,9 +66,9 @@ def update_entry(
         raise ValueError("Entry does not belong to user.")
 
     if project is not UNSET:
-        if isinstance(project, TimeProject):
-            if project.is_archived:
-                raise ValueError("Project is archived.")
+        if isinstance(project, Project):
+            if not project.is_active:
+                raise ValueError("Project is inactive.")
             entry.project = project
         else:
             entry.project = None

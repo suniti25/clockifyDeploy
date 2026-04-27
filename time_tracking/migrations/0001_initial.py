@@ -10,24 +10,11 @@ class Migration(migrations.Migration):
     initial = True
 
     dependencies = [
+        ("user_app", "0012_alter_profile_role"),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
     operations = [
-        migrations.CreateModel(
-            name='TimeProject',
-            fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('name', models.CharField(max_length=255)),
-                ('color', models.CharField(blank=True, default='', max_length=32)),
-                ('is_archived', models.BooleanField(default=False)),
-                ('created_at', models.DateTimeField(auto_now_add=True)),
-                ('user', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='time_projects', to=settings.AUTH_USER_MODEL)),
-            ],
-            options={
-                'ordering': ['name', 'id'],
-            },
-        ),
         migrations.CreateModel(
             name='TimeEntry',
             fields=[
@@ -37,15 +24,11 @@ class Migration(migrations.Migration):
                 ('ended_at', models.DateTimeField(blank=True, db_index=True, null=True)),
                 ('created_at', models.DateTimeField(auto_now_add=True)),
                 ('user', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='time_entries', to=settings.AUTH_USER_MODEL)),
-                ('project', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='entries', to='time_tracking.timeproject')),
+                ('project', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='entries', to='user_app.project')),
             ],
             options={
                 'ordering': ['-started_at', '-id'],
             },
-        ),
-        migrations.AddIndex(
-            model_name='timeproject',
-            index=models.Index(fields=['user', 'is_archived'], name='time_tracki_user_id_85bc78_idx'),
         ),
         migrations.AddIndex(
             model_name='timeentry',

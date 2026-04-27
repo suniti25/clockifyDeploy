@@ -17,3 +17,7 @@ def can_manage_time_projects(user) -> bool:
 
     role = getattr(profile, "role", "")
     return role in {"ADMIN", "MANAGER"}
+
+
+def can_view_all_time_entries(user) -> bool:
+    return can_manage_time_projects(user)

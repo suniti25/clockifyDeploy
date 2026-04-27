@@ -1,13 +1,6 @@
 from django.contrib import admin
 
-from .models import TimeEntry, TimeProject
-
-
-@admin.register(TimeProject)
-class TimeProjectAdmin(admin.ModelAdmin):
-    list_display = ("id", "user", "name", "is_archived", "created_at")
-    list_filter = ("is_archived",)
-    search_fields = ("name", "user__username")
+from .models import TimeEntry
 
 
 @admin.register(TimeEntry)

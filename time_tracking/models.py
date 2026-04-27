@@ -3,30 +3,7 @@ from __future__ import annotations
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
-from django.utils import timezone
-
-
-class TimeProject(models.Model):
-    """Global time-tracking projects (isolated from leave `user_app.Project`)."""
-
-    user = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
-        related_name="time_projects",
-    )
-    name = models.CharField(max_length=255)
-    color = models.CharField(max_length=32, blank=True, default="")
-    is_archived = models.BooleanField(default=False)
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        ordering = ["name", "id"]
-        indexes = [
-            models.Index(fields=["user", "is_archived"]),
-        ]
-
-    def __str__(self) -> str:
-        return f"{self.user_id}:{self.name}"
+from user_app.models import Project
 
 
 class TimeEntry(models.Model):
@@ -38,7 +15,7 @@ class TimeEntry(models.Model):
         related_name="time_entries",
     )
     project = models.ForeignKey(
-        TimeProject,
+        Project,
         null=True,
         blank=True,
         on_delete=models.SET_NULL,
