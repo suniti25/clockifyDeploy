@@ -47,7 +47,7 @@ class TimeEntrySerializer(serializers.ModelSerializer):
 
     def get_duration_seconds(self, obj: TimeEntry):
         if obj.ended_at is not None:
-            return obj.duration_seconds()
+            return obj.duration_seconds
         if not obj.started_at:
             return None
         from django.utils import timezone
@@ -84,6 +84,8 @@ class TimeEntrySerializer(serializers.ModelSerializer):
         if value is None:
             return value
         if not value.is_active:
+            if self.instance is not None and self.instance.project_id == value.pk:
+                return value
             raise serializers.ValidationError("Project is inactive.")
         return value
 

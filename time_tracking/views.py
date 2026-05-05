@@ -1,9 +1,19 @@
 from __future__ import annotations
 
-import logging
-
 from django.core.exceptions import ValidationError
-from django.db.models import Case, F, IntegerField, OuterRef, Subquery, Value, When
+from django.db.models import (
+    Case,
+    DurationField,
+    ExpressionWrapper,
+    F,
+    IntegerField,
+    OuterRef,
+    Subquery,
+    Value,
+    When,
+)
+from django.db.models.functions import Coalesce, Now
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
@@ -13,7 +23,7 @@ from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from user_app.models import Project
+from user_app.models import Employee, Project
 
 from . import services
 from .models import TimeEntry
@@ -25,13 +35,15 @@ from .serializers import (
     TimeProjectSerializer,
 )
 
-logger = logging.getLogger(__name__)
-
 
 def _parse_dt(value: str | None):
     if not value:
         return None
-    dt = parse_datetime(value)
+    dt = parse_datetime(value.strip())
+    if dt is None:
+        raise ValueError("Invalid datetime value; use ISO 8601 format.")
+    if timezone.is_naive(dt):
+        dt = timezone.make_aware(dt, timezone.get_current_timezone())
     return dt
 
 
@@ -91,12 +103,18 @@ class TimeProjectListCreateView(APIView):
 class TimeProjectDetailView(APIView):
     permission_classes = [IsAuthenticated]
 
-    def _get(self, request, pk: int) -> Project:
-        return Project.objects.get(pk=pk)
+    def _get(self, request, pk: int, *, include_inactive: bool) -> Project:
+        qs = _project_queryset_for_user(request.user, include_inactive=include_inactive)
+        return get_object_or_404(qs, pk=pk)
 
     @extend_schema(responses={200: TimeProjectSerializer}, tags=["time_tracking"])
     def get(self, request, pk: int):
-        obj = self._get(request, pk)
+        include_inactive = str(request.query_params.get("include_inactive", "")).lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        obj = self._get(request, pk, include_inactive=include_inactive)
         return Response(TimeProjectSerializer(obj).data)
 
     @extend_schema(
@@ -110,12 +128,15 @@ class TimeProjectDetailView(APIView):
                 {"detail": "Only admin/manager can manage time projects."},
                 status=status.HTTP_403_FORBIDDEN,
             )
-        obj = self._get(request, pk)
+        obj = self._get(request, pk, include_inactive=True)
         ser = TimeProjectSerializer(obj, data=request.data, partial=True)
         ser.is_valid(raise_exception=True)
+        was_active = obj.is_active
         for k, v in ser.validated_data.items():
             setattr(obj, k, v)
         obj.save()
+        if was_active and not obj.is_active:
+            Employee.objects.filter(current_project=obj.name).update(current_project="")
         return Response(TimeProjectSerializer(obj).data)
 
     @extend_schema(responses={204: None}, tags=["time_tracking"])
@@ -125,8 +146,11 @@ class TimeProjectDetailView(APIView):
                 {"detail": "Only admin/manager can manage time projects."},
                 status=status.HTTP_403_FORBIDDEN,
             )
-        obj = self._get(request, pk)
-        obj.delete()
+        obj = self._get(request, pk, include_inactive=True)
+        if obj.is_active:
+            obj.is_active = False
+            obj.save(update_fields=["is_active"])
+            Employee.objects.filter(current_project=obj.name).update(current_project="")
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -159,8 +183,11 @@ class TimeEntryListCreateView(APIView):
     )
     def get(self, request):
         qs = TimeEntry.objects.filter(user=request.user).select_related("project", "user")
-        dt_from = _parse_dt(request.query_params.get("from"))
-        dt_to = _parse_dt(request.query_params.get("to"))
+        try:
+            dt_from = _parse_dt(request.query_params.get("from"))
+            dt_to = _parse_dt(request.query_params.get("to"))
+        except ValueError as e:
+            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
         if dt_from:
             qs = qs.filter(started_at__gte=dt_from)
         if dt_to:
@@ -240,16 +267,6 @@ class TimeEntryDetailView(APIView):
             )
         except (ValueError, ValidationError) as e:
             return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-        except Exception as e:
-            logger.exception("Unexpected error while updating time entry id=%s", pk)
-            return Response(
-                {
-                    "detail": "Failed to update time entry.",
-                    "error_type": e.__class__.__name__,
-                    "error": str(e),
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
         return Response(TimeEntrySerializer(obj, context={"request": request}).data)
 
     @extend_schema(responses={204: None}, tags=["time_tracking"])
@@ -382,6 +399,10 @@ class TimeEntryLatestByUserView(APIView):
                     default=Value(0),
                     output_field=IntegerField(),
                 ),
+                duration_sort=ExpressionWrapper(
+                    Coalesce(F("ended_at"), Now()) - F("started_at"),
+                    output_field=DurationField(),
+                ),
             )
         )
 
@@ -392,10 +413,14 @@ class TimeEntryLatestByUserView(APIView):
             "user_name": f"{order_prefix}user_name_sort",
             "project_name": f"{order_prefix}project_name_sort",
             "started_at": f"{order_prefix}started_at",
-            "duration_seconds": f"{order_prefix}ended_at",
+            "duration_seconds": f"{order_prefix}duration_sort",
             "is_running": f"{order_prefix}is_running_sort",
         }
-        qs = qs.order_by(order_map.get(ordering, "user_name_sort"), "-started_at", "-id")
+        qs = qs.order_by(
+            order_map.get(ordering, f"{order_prefix}user_name_sort"),
+            "-started_at",
+            "-id",
+        )
 
         try:
             page = int(request.query_params.get("page", 1))

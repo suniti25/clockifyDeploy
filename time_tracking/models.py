@@ -45,6 +45,7 @@ class TimeEntry(models.Model):
     def is_running(self) -> bool:
         return self.ended_at is None
 
+    @property
     def duration_seconds(self) -> int | None:
         if not self.started_at or not self.ended_at:
             return None

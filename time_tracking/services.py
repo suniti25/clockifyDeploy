@@ -27,6 +27,7 @@ def start_timer(
     description: str,
     started_at,
 ) -> TimeEntry:
+    User.objects.select_for_update().get(pk=user.pk)
     if get_running_entry(user) is not None:
         raise ValueError("A timer is already running. Stop it before starting a new one.")
     entry = TimeEntry.objects.create(
@@ -67,7 +68,7 @@ def update_entry(
 
     if project is not UNSET:
         if isinstance(project, Project):
-            if not project.is_active:
+            if not project.is_active and entry.project_id != project.pk:
                 raise ValueError("Project is inactive.")
             entry.project = project
         else:
@@ -109,6 +110,13 @@ def continue_entry(*, user: User, source_entry: TimeEntry) -> TimeEntry:
     if get_running_entry(user) is not None:
         raise ValueError("A timer is already running. Stop it before continuing.")
 
+    if (
+        source_entry.project_id is not None
+        and source_entry.project is not None
+        and not source_entry.project.is_active
+    ):
+        raise ValueError("Cannot continue on an inactive project.")
+
     return TimeEntry.objects.create(
         user=user,
         project=source_entry.project,
@@ -124,6 +132,13 @@ def duplicate_entry(*, user: User, source_entry: TimeEntry) -> TimeEntry:
         raise ValueError("Entry does not belong to user.")
     if source_entry.ended_at is None:
         raise ValueError("Cannot duplicate a running entry.")
+
+    if (
+        source_entry.project_id is not None
+        and source_entry.project is not None
+        and not source_entry.project.is_active
+    ):
+        raise ValueError("Cannot duplicate an entry tied to an inactive project.")
 
     return TimeEntry.objects.create(
         user=user,
