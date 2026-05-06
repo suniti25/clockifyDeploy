@@ -28,6 +28,8 @@ urlpatterns = [
     path("api/admin/", include("admin_app.urls")),
     path("api/discord/", include("discord_app.urls")),
     path("discord/", include("discord_app.urls")),
+    # Time tracking (Clockify-style); isolated under /api/time/
+    path("api/time/", include("time_tracking.urls")),
     path("api/", include("integrations.urls")),
     path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
     path(

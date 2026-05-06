@@ -65,6 +65,11 @@ class LoginSerializer(serializers.Serializer):
 class RegisterSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, min_length=8)
     password_confirm = serializers.CharField(write_only=True, min_length=8)
+    role = serializers.ChoiceField(
+        choices=[Profile.ROLE_EMPLOYEE, Profile.ROLE_MANAGER],
+        required=False,
+        default=Profile.ROLE_EMPLOYEE,
+    )
 
     joining_date = serializers.DateField(required=False)
 
@@ -77,6 +82,7 @@ class RegisterSerializer(serializers.ModelSerializer):
             "last_name",
             "password",
             "password_confirm",
+            "role",
             "joining_date",
         ]
 
@@ -113,6 +119,7 @@ class RegisterSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         validated_data.pop("password_confirm")
         password = validated_data.pop("password")
+        role = validated_data.pop("role", Profile.ROLE_EMPLOYEE)
         joining_date = validated_data.pop("joining_date")
 
         first_name = (validated_data.get("first_name") or "").strip()
@@ -129,7 +136,7 @@ class RegisterSerializer(serializers.ModelSerializer):
 
         profile, _ = Profile.objects.get_or_create(
             user=user,
-            defaults={"role": "EMPLOYEE"},
+            defaults={"role": role},
         )
 
         #  create employee if not exists
@@ -164,9 +171,17 @@ class RegisterSerializer(serializers.ModelSerializer):
             employee.reset_leave_balance = True
             employee.save(update_fields=["reset_leave_balance"])
 
+        profile_updates = []
+        if profile.role != role:
+            profile.role = role
+            profile_updates.append("role")
+
         if getattr(profile, "employee_id", None) != employee.id:
             profile.employee = employee
-            profile.save(update_fields=["employee"])
+            profile_updates.append("employee")
+
+        if profile_updates:
+            profile.save(update_fields=profile_updates)
 
         return user
 

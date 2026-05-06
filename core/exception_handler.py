@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 
+from django.conf import settings
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import exception_handler as drf_exception_handler
@@ -26,7 +27,9 @@ def api_exception_handler(exc, context):
         getattr(view, "__class__", type(view)).__name__,
     )
 
-    return Response(
-        {"detail": "Internal server error"},
-        status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-    )
+    payload = {"detail": "Internal server error"}
+    if settings.DEBUG:
+        payload["error_type"] = exc.__class__.__name__
+        payload["error"] = str(exc)
+
+    return Response(payload, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
