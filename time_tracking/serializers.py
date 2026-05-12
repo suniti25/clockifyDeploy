@@ -10,7 +10,7 @@ from .models import TimeEntry
 class TimeProjectSerializer(serializers.ModelSerializer):
     class Meta:
         model = Project
-        fields = ["id", "name", "is_active", "created_at"]
+        fields = ["id", "name", "is_active", "color", "created_at"]
         read_only_fields = ["id", "created_at"]
 
 
@@ -19,6 +19,7 @@ class TimeEntrySerializer(serializers.ModelSerializer):
     is_running = serializers.SerializerMethodField()
     user_name = serializers.SerializerMethodField()
     project_name = serializers.SerializerMethodField()
+    project_color = serializers.SerializerMethodField()
 
     class Meta:
         model = TimeEntry
@@ -27,12 +28,14 @@ class TimeEntrySerializer(serializers.ModelSerializer):
             "user",
             "project",
             "description",
+            "entry_type",
             "started_at",
             "ended_at",
             "duration_seconds",
             "is_running",
             "user_name",
             "project_name",
+            "project_color",
             "created_at",
         ]
         read_only_fields = [
@@ -43,6 +46,7 @@ class TimeEntrySerializer(serializers.ModelSerializer):
             "is_running",
             "user_name",
             "project_name",
+            "project_color",
         ]
 
     def get_duration_seconds(self, obj: TimeEntry):
@@ -67,6 +71,11 @@ class TimeEntrySerializer(serializers.ModelSerializer):
             return None
         return obj.project.name
 
+    def get_project_color(self, obj: TimeEntry) -> str | None:
+        if not obj.project:
+            return None
+        return obj.project.color
+
     def validate(self, attrs):
         started = attrs.get("started_at") or getattr(
             self.instance, "started_at", None
@@ -77,6 +86,13 @@ class TimeEntrySerializer(serializers.ModelSerializer):
         if started and ended and ended < started:
             raise serializers.ValidationError(
                 {"ended_at": "ended_at cannot be before started_at."}
+            )
+        project = attrs.get("project")
+        if "project" not in attrs and self.instance is not None:
+            project = self.instance.project
+        if ended is not None and project is None:
+            raise serializers.ValidationError(
+                {"project": "A stopped time entry must have a project."}
             )
         return attrs
 
@@ -106,6 +122,12 @@ class TimeEntryStartSerializer(serializers.Serializer):
         queryset=Project.objects.none(), required=False, allow_null=True
     )
     description = serializers.CharField(required=False, allow_blank=True, default="")
+    entry_type = serializers.ChoiceField(
+        choices=TimeEntry.ENTRY_TYPE_CHOICES,
+        required=False,
+        allow_blank=True,
+        default="",
+    )
     started_at = serializers.DateTimeField(required=False, allow_null=True)
 
     def __init__(self, *args, **kwargs):

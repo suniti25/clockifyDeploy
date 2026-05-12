@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from django.db import models
 from django.contrib.auth.models import User
+from django.core.validators import RegexValidator
 from django.utils import timezone
 
 
@@ -39,6 +40,16 @@ class Employee(models.Model):
 class Project(models.Model):
     name = models.CharField(max_length=255, unique=True)
     is_active = models.BooleanField(default=True)
+    color = models.CharField(
+        max_length=7,
+        default="#6366f1",
+        validators=[
+            RegexValidator(
+                regex=r"^#[0-9A-Fa-f]{6}$",
+                message="Color must be a hex value like #6366f1.",
+            )
+        ],
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

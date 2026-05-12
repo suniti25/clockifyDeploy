@@ -9,6 +9,16 @@ from user_app.models import Project
 class TimeEntry(models.Model):
     """A single time segment; `ended_at` null means timer is running."""
 
+    ENTRY_TYPE_MEETING = "MEETING"
+    ENTRY_TYPE_DEVELOPMENT = "DEVELOPMENT"
+    ENTRY_TYPE_OVERTIME = "OVERTIME"
+    ENTRY_TYPE_CHOICES = [
+        ("", "Unspecified"),
+        (ENTRY_TYPE_MEETING, "Meeting"),
+        (ENTRY_TYPE_DEVELOPMENT, "Development"),
+        (ENTRY_TYPE_OVERTIME, "Overtime"),
+    ]
+
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
@@ -22,6 +32,13 @@ class TimeEntry(models.Model):
         related_name="entries",
     )
     description = models.CharField(max_length=500, blank=True, default="")
+    entry_type = models.CharField(
+        max_length=20,
+        choices=ENTRY_TYPE_CHOICES,
+        blank=True,
+        default="",
+        db_index=True,
+    )
     started_at = models.DateTimeField(db_index=True)
     ended_at = models.DateTimeField(null=True, blank=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -36,6 +53,8 @@ class TimeEntry(models.Model):
     def clean(self):
         if self.started_at and self.ended_at and self.ended_at < self.started_at:
             raise ValidationError("ended_at cannot be before started_at.")
+        if self.ended_at is not None and self.project_id is None:
+            raise ValidationError("A stopped time entry must have a project.")
 
     def save(self, *args, **kwargs):
         self.full_clean()

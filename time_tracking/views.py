@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import timedelta
+
 from django.core.exceptions import ValidationError
 from django.db.models import (
     Case,
@@ -45,6 +47,40 @@ def _parse_dt(value: str | None):
     if timezone.is_naive(dt):
         dt = timezone.make_aware(dt, timezone.get_current_timezone())
     return dt
+
+
+def _entry_duration_seconds(started_at, ended_at, now) -> int:
+    ended_at = ended_at or now
+    if not started_at or ended_at < started_at:
+        return 0
+    return max(int((ended_at - started_at).total_seconds()), 0)
+
+
+def _time_entry_totals(qs):
+    now = timezone.now()
+    week_totals: dict[str, int] = {}
+    day_totals: dict[str, int] = {}
+
+    for entry in qs.values("started_at", "ended_at").iterator():
+        started_at = entry["started_at"]
+        local_started = timezone.localtime(started_at)
+        day_key = local_started.date().isoformat()
+        week_start = local_started.date() - timedelta(days=local_started.weekday())
+        week_key = week_start.isoformat()
+        seconds = _entry_duration_seconds(started_at, entry["ended_at"], now)
+        day_totals[day_key] = day_totals.get(day_key, 0) + seconds
+        week_totals[week_key] = week_totals.get(week_key, 0) + seconds
+
+    return {
+        "weekly_totals": [
+            {"week_start": key, "total_seconds": value}
+            for key, value in sorted(week_totals.items(), reverse=True)
+        ],
+        "day_totals": [
+            {"day": key, "total_seconds": value}
+            for key, value in sorted(day_totals.items(), reverse=True)
+        ],
+    }
 
 
 def _project_queryset_for_user(user, include_inactive: bool = False):
@@ -175,10 +211,22 @@ class TimeEntryListCreateView(APIView):
                 "limit",
                 OpenApiTypes.INT,
                 OpenApiParameter.QUERY,
-                description="Limit number of entries returned (max 500)",
+                description="Legacy alias for page_size (max 500)",
+            ),
+            OpenApiParameter(
+                "page",
+                OpenApiTypes.INT,
+                OpenApiParameter.QUERY,
+                description="Page number (default 1)",
+            ),
+            OpenApiParameter(
+                "page_size",
+                OpenApiTypes.INT,
+                OpenApiParameter.QUERY,
+                description="Items per page (default 50, max 500)",
             ),
         ],
-        responses={200: TimeEntrySerializer(many=True)},
+        responses={200: OpenApiTypes.OBJECT},
         tags=["time_tracking"],
     )
     def get(self, request):
@@ -192,14 +240,42 @@ class TimeEntryListCreateView(APIView):
             qs = qs.filter(started_at__gte=dt_from)
         if dt_to:
             qs = qs.filter(started_at__lte=dt_to)
+
+        qs = qs.order_by("-started_at", "-id")
+        totals = _time_entry_totals(qs)
+
         try:
-            limit = int(request.query_params.get("limit", 500))
+            page = int(request.query_params.get("page", 1))
         except (TypeError, ValueError):
-            limit = 500
-        limit = max(1, min(limit, 500))
-        qs = qs.order_by("-started_at", "-id")[:limit]
+            page = 1
+        try:
+            page_size = int(
+                request.query_params.get(
+                    "page_size", request.query_params.get("limit", 50)
+                )
+            )
+        except (TypeError, ValueError):
+            page_size = 50
+        page = max(1, page)
+        page_size = max(1, min(page_size, 500))
+        total_count = qs.count()
+        if total_count:
+            max_page = max(1, (total_count + page_size - 1) // page_size)
+            page = min(page, max_page)
+        start = (page - 1) * page_size
+        end = start + page_size
+        entries = qs[start:end]
+
         return Response(
-            TimeEntrySerializer(qs, many=True, context={"request": request}).data
+            {
+                "count": total_count,
+                "page": page,
+                "page_size": page_size,
+                **totals,
+                "results": TimeEntrySerializer(
+                    entries, many=True, context={"request": request}
+                ).data,
+            }
         )
 
     @extend_schema(
@@ -254,6 +330,8 @@ class TimeEntryDetailView(APIView):
             service_kwargs["project"] = ser.validated_data.get("project")
         if "description" in ser.validated_data:
             service_kwargs["description"] = ser.validated_data.get("description")
+        if "entry_type" in ser.validated_data:
+            service_kwargs["entry_type"] = ser.validated_data.get("entry_type")
         if "started_at" in ser.validated_data:
             service_kwargs["started_at"] = ser.validated_data.get("started_at")
         if "ended_at" in ser.validated_data:
@@ -498,6 +576,7 @@ class TimeEntryStartView(APIView):
                 user=request.user,
                 project_id=project_id,
                 description=ser.validated_data.get("description") or "",
+                entry_type=ser.validated_data.get("entry_type") or "",
                 started_at=ser.validated_data.get("started_at") or timezone.now(),
             )
         except ValueError as e:

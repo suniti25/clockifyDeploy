@@ -26,6 +26,7 @@ def start_timer(
     project_id: int | None,
     description: str,
     started_at,
+    entry_type: str = "",
 ) -> TimeEntry:
     User.objects.select_for_update().get(pk=user.pk)
     if get_running_entry(user) is not None:
@@ -34,6 +35,7 @@ def start_timer(
         user=user,
         project_id=project_id,
         description=description or "",
+        entry_type=entry_type or "",
         started_at=started_at or timezone.now(),
         ended_at=None,
     )
@@ -48,6 +50,8 @@ def stop_running_timer(*, user: User, entry_id: int | None = None) -> TimeEntry:
     entry = qs.order_by("-started_at").first()
     if entry is None:
         raise ValueError("No running timer found.")
+    if entry.project_id is None:
+        raise ValueError("Select a project before stopping this timer.")
     entry.ended_at = timezone.now()
     entry.save(update_fields=["ended_at"])
     return entry
@@ -60,6 +64,7 @@ def update_entry(
     entry: TimeEntry,
     project: Project | None | object = UNSET,
     description: str | None | object = UNSET,
+    entry_type: str | object = UNSET,
     started_at=UNSET,
     ended_at=UNSET,
 ) -> TimeEntry:
@@ -76,6 +81,9 @@ def update_entry(
 
     if description is not UNSET:
         entry.description = description
+
+    if entry_type is not UNSET:
+        entry.entry_type = entry_type or ""
 
     if started_at is not UNSET:
         entry.started_at = started_at
@@ -96,6 +104,9 @@ def update_entry(
 
     if entry.started_at and entry.ended_at and entry.ended_at < entry.started_at:
         raise ValueError("ended_at cannot be before started_at.")
+
+    if entry.ended_at is not None and entry.project_id is None:
+        raise ValueError("A stopped time entry must have a project.")
 
     entry.save()
     return entry
@@ -121,6 +132,7 @@ def continue_entry(*, user: User, source_entry: TimeEntry) -> TimeEntry:
         user=user,
         project=source_entry.project,
         description=source_entry.description or "",
+        entry_type=source_entry.entry_type or "",
         started_at=timezone.now(),
         ended_at=None,
     )
@@ -144,6 +156,7 @@ def duplicate_entry(*, user: User, source_entry: TimeEntry) -> TimeEntry:
         user=user,
         project=source_entry.project,
         description=source_entry.description or "",
+        entry_type=source_entry.entry_type or "",
         started_at=source_entry.started_at,
         ended_at=source_entry.ended_at,
     )
